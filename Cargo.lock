@@ -104,14 +104,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
-name = "core"
-version = "0.1.0"
-dependencies = [
- "serde",
- "toml",
-]
-
-[[package]]
 name = "core_affinity"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -297,12 +289,11 @@ name = "master"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "core",
  "core_affinity",
  "env_logger",
  "log",
  "nix",
- "num_cpus",
+ "proxy-common",
  "slave",
  "tokio",
  "tokio-uring",
@@ -394,6 +385,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "proxy-common"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -480,11 +480,11 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 name = "slave"
 version = "0.1.0"
 dependencies = [
- "core",
  "core_affinity",
  "env_logger",
  "log",
  "nix",
+ "proxy-common",
  "socket2 0.5.10",
  "tokio",
  "tokio-uring",

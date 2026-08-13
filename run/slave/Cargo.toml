@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 # Ortak kütüphanemiz
-core = { path = "../../crates/core" }
+proxy_common = { package = "proxy-common", path = "../../crates/core" }
 
 # Asenkron Runtime ve io_uring
 tokio = { version = "1.0", features = ["rt", "net", "macros"] } # current_thread için rt yeterlidir
