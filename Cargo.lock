@@ -305,6 +305,7 @@ dependencies = [
  "num_cpus",
  "slave",
  "tokio",
+ "tokio-uring",
 ]
 
 [[package]]
