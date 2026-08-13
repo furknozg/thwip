@@ -1,0 +1,16 @@
+[workspace]
+resolver = "3"
+members = [
+    "run/master",    # Parent/Supervision sürecini yöneten ana uygulama
+    "run/slave",  # Fork edilen child süreçlerin asenkron iş mantığı ve io_uring döngüsü
+    "crates/core"   # Ortak struct'lar, konfigürasyonlar ve IPC veri yapıları
+]
+
+# Tüm paketlerde ortak kullanılacak profil optimizasyonları (Üretim modu için kritik)
+[profile.release]
+opt-level = 3           # Maksimum kod optimizasyonu
+lto = "fat"             # Link-Time Optimization (Farklı crate'ler arası optimizasyon)
+codegen-units = 1       # Daha iyi optimizasyon için derleme birimlerini teke düşürür
+panic = "abort"         # Çöken child sürecin performansı etkilemeden direkt kapanması için
+strip = true            # Binary boyutunu küçültmek için debug sembollerini temizler
+

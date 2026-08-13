@@ -1,0 +1,24 @@
+[package]
+name = "master"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "thwip-main"
+path = "src/main.rs"
+
+[dependencies]
+# Diğer workspace paketlerimiz
+core = { path = "../../crates/core" }
+slave = { path = "../slave" }
+
+# Linux Sistem Çağrıları (Fork ve Waitpid için kritik)
+nix = { version = "0.29", features = ["process", "signal"] } 
+num_cpus = "1.16" # Sistemdeki toplam çekirdek sayısını dinamik öğrenmek için
+
+# Loglama ve Hata Yönetimi
+log = "0.4"
+env_logger = "0.11"
+anyhow = "1.0" # Kolay hata yönetimi için
+core_affinity = "0.8.3"
+tokio = "1.53.1"
