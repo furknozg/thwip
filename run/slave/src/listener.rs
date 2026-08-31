@@ -7,6 +7,11 @@ use std::{
 
 pub const DEFAULT_BACKLOG: i32 = 1024;
 
+pub struct BoundListener {
+    pub socket: TcpListener,
+    pub server_index: usize,
+}
+
 pub fn bind_worker_listener(address: SocketAddr, backlog: i32) -> io::Result<TcpListener> {
     if backlog <= 0 {
         return Err(io::Error::new(
@@ -38,18 +43,24 @@ pub fn bind_worker_listener(address: SocketAddr, backlog: i32) -> io::Result<Tcp
     Ok(socket.into())
 }
 
-pub fn bind_worker_listeners(config: &Config) -> io::Result<Vec<TcpListener>> {
+pub fn bind_worker_listeners(config: &Config) -> io::Result<Vec<BoundListener>> {
     config
         .http
         .servers
         .iter()
-        .map(|server| {
-            bind_worker_listener(server.listen, DEFAULT_BACKLOG).map_err(|error| {
-                io::Error::new(
-                    error.kind(),
-                    format!("failed to bind listener at {}: {error}", server.listen),
-                )
-            })
+        .enumerate()
+        .map(|(server_index, server)| {
+            bind_worker_listener(server.listen, DEFAULT_BACKLOG)
+                .map(|socket| BoundListener {
+                    socket,
+                    server_index,
+                })
+                .map_err(|error| {
+                    io::Error::new(
+                        error.kind(),
+                        format!("failed to bind listener at {}: {error}", server.listen),
+                    )
+                })
         })
         .collect()
 }

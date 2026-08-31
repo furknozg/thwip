@@ -1,5 +1,5 @@
 mod listener;
-pub use listener::{bind_worker_listener, bind_worker_listeners, DEFAULT_BACKLOG};
+pub use listener::{bind_worker_listener, bind_worker_listeners, BoundListener, DEFAULT_BACKLOG};
 
 mod http;
 pub use http::{
@@ -8,6 +8,9 @@ pub use http::{
 
 mod epoll;
 pub use epoll::run_epoll;
+
+mod router;
+pub use router::{response_bytes, route};
 
 mod startup;
 pub use startup::*;

@@ -1,42 +1,61 @@
+use crate::BoundListener;
 #[cfg(target_os = "linux")]
-use crate::{parse_request_head, RequestHeadParse};
+use crate::{parse_request_head, response_bytes, route, RequestHeadParse};
 #[cfg(target_os = "linux")]
 use mio::{net::TcpListener, net::TcpStream, Events, Interest, Poll, Token};
 #[cfg(target_os = "linux")]
+use proxy_common::Action;
+use proxy_common::Server;
+#[cfg(target_os = "linux")]
 use slab::Slab;
-use std::{io, net::TcpListener as StdTcpListener};
+use std::io;
 
 #[cfg(target_os = "linux")]
 struct Connection {
     socket: TcpStream,
     read_buffer: Vec<u8>,
     write_buffer: Vec<u8>,
+    write_offset: usize,
     request_head_complete: bool,
+    server_index: usize,
 }
 
 #[cfg(target_os = "linux")]
 struct EpollWorker {
     poll: Poll,
-    listeners: Vec<TcpListener>,
+    listeners: Vec<RegisteredListener>,
     connections: Slab<Connection>,
+    servers: Vec<Server>,
+}
+
+#[cfg(target_os = "linux")]
+struct RegisteredListener {
+    socket: TcpListener,
+    server_index: usize,
 }
 
 #[cfg(target_os = "linux")]
 impl EpollWorker {
-    fn new(listeners: Vec<StdTcpListener>) -> io::Result<Self> {
+    fn new(listeners: Vec<BoundListener>, servers: Vec<Server>) -> io::Result<Self> {
         let poll = Poll::new()?;
-        let mut listeners: Vec<TcpListener> =
-            listeners.into_iter().map(TcpListener::from_std).collect();
+        let mut listeners: Vec<RegisteredListener> = listeners
+            .into_iter()
+            .map(|listener| RegisteredListener {
+                socket: TcpListener::from_std(listener.socket),
+                server_index: listener.server_index,
+            })
+            .collect();
 
         for (index, listener) in listeners.iter_mut().enumerate() {
             poll.registry()
-                .register(listener, Token(index), Interest::READABLE)?;
+                .register(&mut listener.socket, Token(index), Interest::READABLE)?;
         }
 
         Ok(Self {
             poll,
             listeners,
             connections: Slab::new(),
+            servers,
         })
     }
 
@@ -45,31 +64,32 @@ impl EpollWorker {
 
         loop {
             self.poll.poll(&mut events, None)?;
-            let ready: Vec<(Token, bool)> = events
+            let ready: Vec<(Token, bool, bool)> = events
                 .iter()
-                .map(|event| (event.token(), event.is_readable()))
+                .map(|event| (event.token(), event.is_readable(), event.is_writable()))
                 .collect();
 
-            for (token, readable) in ready {
-                if !readable {
-                    continue;
-                }
-
+            for (token, readable, writable) in ready {
                 if token.0 < self.listeners.len() {
-                    self.accept_ready(token.0)?;
-                } else {
+                    if readable {
+                        self.accept_ready(token.0)?;
+                    }
+                } else if readable {
                     self.connection_ready(token.0 - self.listeners.len())?;
+                } else if writable {
+                    self.write_ready(token.0 - self.listeners.len())?;
                 }
             }
         }
     }
 
     fn accept_ready(&mut self, listener_index: usize) -> io::Result<()> {
+        let server_index = self.listeners[listener_index].server_index;
         loop {
-            match self.listeners[listener_index].accept() {
+            match self.listeners[listener_index].socket.accept() {
                 Ok((stream, peer_address)) => {
                     println!("accepted connection from {peer_address}");
-                    self.register_connection(stream)?;
+                    self.register_connection(stream, server_index)?;
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
                 Err(error) => {
@@ -80,12 +100,14 @@ impl EpollWorker {
         }
     }
 
-    fn register_connection(&mut self, stream: TcpStream) -> io::Result<()> {
+    fn register_connection(&mut self, stream: TcpStream, server_index: usize) -> io::Result<()> {
         let connection_id = self.connections.insert(Connection {
             socket: stream,
             read_buffer: Vec::with_capacity(8 * 1024),
             write_buffer: Vec::new(),
+            write_offset: 0,
             request_head_complete: false,
+            server_index,
         });
         let token = Token(self.listeners.len() + connection_id);
 
@@ -102,6 +124,8 @@ impl EpollWorker {
         }
 
         let mut close_connection = false;
+        let mut request_target = None;
+        let mut server_index = 0;
         {
             use std::io::Read;
 
@@ -123,6 +147,9 @@ impl EpollWorker {
                                 Ok(RequestHeadParse::Complete { request, .. }) => {
                                     connection.request_head_complete = true;
                                     println!("{} {}", request.method, request.target);
+                                    server_index = connection.server_index;
+                                    request_target = Some(request.target);
+                                    break;
                                 }
                                 Err(error) => {
                                     eprintln!("invalid HTTP request: {error}");
@@ -142,6 +169,18 @@ impl EpollWorker {
             }
         }
 
+        if let Some(target) = request_target {
+            let response = self.response_for(server_index, &target);
+            let connection = &mut self.connections[connection_id];
+            connection.write_buffer = response;
+            connection.write_offset = 0;
+            self.poll.registry().reregister(
+                &mut connection.socket,
+                Token(self.listeners.len() + connection_id),
+                Interest::WRITABLE,
+            )?;
+        }
+
         if close_connection {
             let mut connection = self.connections.remove(connection_id);
             self.poll.registry().deregister(&mut connection.socket)?;
@@ -149,15 +188,74 @@ impl EpollWorker {
 
         Ok(())
     }
+
+    fn write_ready(&mut self, connection_id: usize) -> io::Result<()> {
+        if !self.connections.contains(connection_id) {
+            return Ok(());
+        }
+
+        let mut finished = false;
+        {
+            use std::io::Write;
+
+            let connection = &mut self.connections[connection_id];
+            while connection.write_offset < connection.write_buffer.len() {
+                match connection
+                    .socket
+                    .write(&connection.write_buffer[connection.write_offset..])
+                {
+                    Ok(0) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WriteZero,
+                            "socket write returned zero",
+                        ))
+                    }
+                    Ok(written) => connection.write_offset += written,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+                    Err(error) => return Err(error),
+                }
+            }
+            finished = true;
+        }
+
+        if finished {
+            let mut connection = self.connections.remove(connection_id);
+            self.poll.registry().deregister(&mut connection.socket)?;
+        }
+
+        Ok(())
+    }
+
+    fn response_for(&self, server_index: usize, target: &str) -> Vec<u8> {
+        let Some(server) = self.servers.get(server_index) else {
+            return response_bytes(500, "server configuration is unavailable");
+        };
+
+        match route(server, target) {
+            Some(Action::Response { status, body }) => response_bytes(*status, body),
+            Some(Action::Static { .. } | Action::Proxy { .. }) => {
+                response_bytes(501, "configured action is not implemented")
+            }
+            None => response_bytes(404, "not found"),
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
-pub fn run_epoll(listeners: Vec<StdTcpListener>, max_events: usize) -> io::Result<()> {
-    EpollWorker::new(listeners)?.run(max_events)
+pub fn run_epoll(
+    listeners: Vec<BoundListener>,
+    servers: Vec<Server>,
+    max_events: usize,
+) -> io::Result<()> {
+    EpollWorker::new(listeners, servers)?.run(max_events)
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn run_epoll(_listeners: Vec<StdTcpListener>, _max_events: usize) -> io::Result<()> {
+pub fn run_epoll(
+    _listeners: Vec<BoundListener>,
+    _servers: Vec<Server>,
+    _max_events: usize,
+) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "epoll is only supported on Linux",

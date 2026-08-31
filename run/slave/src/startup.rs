@@ -1,14 +1,16 @@
 use proxy_common::{AsyncRuntimeConfig, Config};
-use std::{io, net::TcpListener};
+use std::io;
 
-use crate::{bind_worker_listeners, run_epoll};
+use crate::{bind_worker_listeners, run_epoll, BoundListener};
 
 pub fn start_worker(cpu_id: usize, config: &Config) -> io::Result<()> {
     pin_to_cpu(cpu_id)?;
     let listeners = bind_worker_listeners(config)?;
 
     match &config.runtime {
-        AsyncRuntimeConfig::Epoll { max_events } => run_epoll(listeners, *max_events),
+        AsyncRuntimeConfig::Epoll { max_events } => {
+            run_epoll(listeners, config.http.servers.clone(), *max_events)
+        }
         AsyncRuntimeConfig::IoUring {
             sq_entries,
             cq_entries,
@@ -40,7 +42,7 @@ fn pin_to_cpu(cpu_id: usize) -> io::Result<()> {
 
 #[cfg(target_os = "linux")]
 pub fn run_io_uring(
-    listeners: Vec<TcpListener>,
+    listeners: Vec<BoundListener>,
     sq_entries: u32,
     cq_entries: u32,
     buf_ring_size: u32,
@@ -55,7 +57,7 @@ pub fn run_io_uring(
 
 #[cfg(not(target_os = "linux"))]
 pub fn run_io_uring(
-    _listeners: Vec<TcpListener>,
+    _listeners: Vec<BoundListener>,
     _sq_entries: u32,
     _cq_entries: u32,
     _buf_ring_size: u32,
