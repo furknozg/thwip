@@ -1,11 +1,55 @@
-use std::{io, net::SocketAddr};
+use proxy_common::Config;
+use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+use std::{
+    io,
+    net::{SocketAddr, TcpListener},
+};
 
-pub trait Listener {
-    fn bind(address: SocketAddr) -> io::Result<Self>
-    where
-        Self: Sized;
+pub const DEFAULT_BACKLOG: i32 = 1024;
 
-    fn local_addr(&self) -> io::Result<SocketAddr>;
+pub fn bind_worker_listener(address: SocketAddr, backlog: i32) -> io::Result<TcpListener> {
+    if backlog <= 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "listener backlog must be greater than zero",
+        ));
+    }
 
-    async fn accept(&mut self) -> std::io::Result<(Self::Connection, std::net::SocketAddr)>;
+    let socket = Socket::new(
+        Domain::for_address(address),
+        Type::STREAM,
+        Some(Protocol::TCP),
+    )?;
+
+    socket.set_reuse_address(true)?;
+
+    // The one-listener-per-worker model relies on Linux SO_REUSEPORT. Other
+    // platforms can still build and exercise the socket factory, but do not
+    // provide the project's epoll/io_uring runtime support.
+    #[cfg(target_os = "linux")]
+    socket.set_reuse_port(true)?;
+
+    socket.set_nonblocking(true)?;
+
+    let socket_address = SockAddr::from(address);
+    socket.bind(&socket_address)?;
+    socket.listen(backlog)?;
+
+    Ok(socket.into())
+}
+
+pub fn bind_worker_listeners(config: &Config) -> io::Result<Vec<TcpListener>> {
+    config
+        .http
+        .servers
+        .iter()
+        .map(|server| {
+            bind_worker_listener(server.listen, DEFAULT_BACKLOG).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("failed to bind listener at {}: {error}", server.listen),
+                )
+            })
+        })
+        .collect()
 }

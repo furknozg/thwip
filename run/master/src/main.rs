@@ -72,37 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run_child_worker(cpu_id: usize, config: Config) {
-    // Çekirdek sabitleme (Affinity)
-    let core_ids = core_affinity::get_core_ids().unwrap();
-    if let Some(core) = core_ids.get(cpu_id % core_ids.len()) {
-        core_affinity::set_for_current(*core);
+    if let Err(error) = slave::start_worker(cpu_id, &config) {
+        eprintln!("[Worker {}] failed to start: {}", cpu_id, error);
     }
-
-    // Tek thread üzerinde koşan izole Tokio Runtime ayağa kaldırılıyor
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    runtime.block_on(async {
-        match &config.runtime {
-            AsyncRuntimeConfig::Epoll { max_events } => {
-                println!(
-                    "[Worker {}] epoll worker started (max events: {})",
-                    cpu_id, max_events
-                );
-            }
-            AsyncRuntimeConfig::IoUring { cq_entries, .. } => {
-                println!(
-                    "[Worker {}] io_uring worker started (CQ depth: {})",
-                    cpu_id, cq_entries
-                );
-            }
-        }
-
-        // io_uring halkası (io_uring::IoUring::builder() veya tokio_uring)
-        // config.io_uring.sq_entries ve config.io_uring.cq_entries değerleriyle burada başlatılır.
-
-        // Örnek asenkron proxy döngüsü...
-    });
 }

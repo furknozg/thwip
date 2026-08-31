@@ -289,14 +289,11 @@ name = "master"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "core_affinity",
  "env_logger",
  "log",
  "nix",
  "proxy-common",
  "slave",
- "tokio",
- "tokio-uring",
 ]
 
 [[package]]
