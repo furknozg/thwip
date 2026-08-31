@@ -1,7 +1,8 @@
 worker_count = 12
 
 [runtime]
-type = "io_uring"
+type = "epoll"
+max_events = 1024
 sq_entries = 4096
 cq_entries = 8192
 buf_ring_size = 16384
@@ -10,7 +11,7 @@ buf_size = 8192
 
 [[http.servers]]
 server_name = "127.0.0.1"
-listen = 8089
+listen = "127.0.0.1:8082"
 
 [[http.servers.locations]]
 matcher = { type = "prefix", path = "/" }
@@ -36,7 +37,7 @@ body = "OK"
 
 [[http.servers]]
 server_name = "127.0.0.1"
-listen = 8089 # currently same port binding is not supported
+listen = "127.0.0.1:8081" # currently same port binding is not supported
 
 [[http.servers.locations]]
 matcher = { type = "prefix", path = "/" }
