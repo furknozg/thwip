@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
-use std::{fs, path::Path};
+use std::{
+    fs,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    path::Path,
+};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,7 +76,7 @@ pub struct Server {
     #[serde(default)]
     pub server_name: Option<String>,
     pub locations: Vec<Location>,
-    pub listen: u16,
+    pub listen: SocketAddr,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,7 +113,7 @@ impl Default for Config {
                 servers: vec![Server {
                     server_name: None,
                     locations: Vec::new(),
-                    listen: 8080,
+                    listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8089),
                 }],
             },
             runtime: AsyncRuntimeConfig::default(),

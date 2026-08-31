@@ -42,10 +42,19 @@ traffic.
 - [ ] Add an `auto` runtime mode once capability probing and fallback exist.
 - [ ] Validate runtime-specific configuration at load time and reject invalid
   queue/buffer sizes with actionable errors.
-- [ ] Implement socket setup before forking: nonblocking sockets, `SO_REUSEADDR`,
-  and `SO_REUSEPORT` when one listener per worker is selected.
-- [ ] Decide and document listener ownership: inherited listener vs. one
-  `SO_REUSEPORT` listener per worker.
+- [x] Use one listener per worker. Each child creates its own nonblocking socket
+  after `fork`, with `SO_REUSEADDR` and `SO_REUSEPORT`, and binds every configured
+  `listen` address. The kernel distributes new connections between workers.
+- [ ] Implement the worker-side listener factory: create/bind/listen sockets
+  after `fork`, set nonblocking mode, and return contextual errors for each
+  address that cannot be opened.
+- [ ] Define an explicit listener-address type (IP address plus port) instead of
+  treating `listen` as a port-only field; bind to `0.0.0.0` by default until the
+  configuration supports an explicit address.
+- [ ] Validate duplicate listen addresses once per config, while allowing every
+  worker to bind the same address through `SO_REUSEPORT`.
+- [ ] Add a Linux integration test: start two workers on the same loopback port,
+  verify both binds succeed, and verify all listeners close during shutdown.
 - [ ] Implement connection lifecycle and backpressure limits (maximum open
   connections, input/output buffer limits, and request timeouts).
 - [ ] Implement HTTP/1.1 parsing, keep-alive, request-size limits, and correct
