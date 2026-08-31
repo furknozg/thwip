@@ -1,8 +1,8 @@
-use proxy_common::{read_config, Config};
+use proxy_common::{read_config, AsyncRuntimeConfig, Config};
 use std::{fs, path::Path};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config_path = Path::new("rginx.conf");
+    let config_path = Path::new("rginx.toml");
 
     let config = if config_path.exists() {
         println!("Ayar dosyası bulundu, yükleniyor...");
@@ -25,10 +25,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     println!("Toplam Worker Süreç Sayısı: {}", total_workers);
-    println!(
-        "io_uring SQ Deep: {}, CQ Deep: {}",
-        config.io_uring.sq_entries, config.io_uring.cq_entries
-    );
+    match &config.runtime {
+        AsyncRuntimeConfig::Epoll { max_events } => {
+            println!("Runtime: epoll (max events: {})", max_events);
+        }
+        AsyncRuntimeConfig::IoUring {
+            sq_entries,
+            cq_entries,
+            ..
+        } => {
+            println!(
+                "Runtime: io_uring (SQ depth: {}, CQ depth: {})",
+                sq_entries, cq_entries
+            );
+        }
+    }
 
     //  (Fork) Yönetimi
     for cpu_id in 0..total_workers {
@@ -74,10 +85,20 @@ fn run_child_worker(cpu_id: usize, config: Config) {
         .unwrap();
 
     runtime.block_on(async {
-        println!(
-            "[Worker {}] Soket dinleniyor. io_uring CQEntries: {}",
-            cpu_id, config.io_uring.cq_entries
-        );
+        match &config.runtime {
+            AsyncRuntimeConfig::Epoll { max_events } => {
+                println!(
+                    "[Worker {}] epoll worker started (max events: {})",
+                    cpu_id, max_events
+                );
+            }
+            AsyncRuntimeConfig::IoUring { cq_entries, .. } => {
+                println!(
+                    "[Worker {}] io_uring worker started (CQ depth: {})",
+                    cpu_id, cq_entries
+                );
+            }
+        }
 
         // io_uring halkası (io_uring::IoUring::builder() veya tokio_uring)
         // config.io_uring.sq_entries ve config.io_uring.cq_entries değerleriyle burada başlatılır.

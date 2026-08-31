@@ -1,0 +1,9 @@
+# Readiness-based Linux runtime.
+worker_count = 4
+
+[runtime]
+type = "epoll"
+max_events = 2048
+
+[http]
+servers = []

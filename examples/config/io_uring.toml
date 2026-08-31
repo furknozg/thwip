@@ -1,0 +1,12 @@
+# Completion-based Linux runtime. Requires a compatible Linux kernel.
+worker_count = 4
+
+[runtime]
+type = "io_uring"
+sq_entries = 4096
+cq_entries = 8192
+buf_ring_size = 16384
+buf_size = 8192
+
+[http]
+servers = []

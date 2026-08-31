@@ -1,10 +1,12 @@
 worker_count = 12
 
-[io_uring]
+[runtime]
+type = "io_uring"
 sq_entries = 4096
 cq_entries = 8192
 buf_ring_size = 16384
 buf_size = 8192
+
 
 [[http.servers]]
 server_name = "127.0.0.1"

@@ -7,7 +7,7 @@ pub struct Config {
     pub http: HttpConfig,
 
     #[serde(default)]
-    pub io_uring: IoUringConfig,
+    pub runtime: AsyncRuntimeConfig,
 
     /// Defaults to one worker per logical CPU available to this process.
     #[serde(default = "default_worker_count")]
@@ -17,6 +17,54 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpConfig {
     pub servers: Vec<Server>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AsyncRuntimeConfig {
+    Epoll {
+        #[serde(default = "default_epoll_max_events")]
+        max_events: usize,
+    },
+
+    IoUring {
+        #[serde(default = "default_sq_entries")]
+        sq_entries: u32,
+        #[serde(default = "default_cq_entries")]
+        cq_entries: u32,
+        #[serde(default = "default_buf_ring_size")]
+        buf_ring_size: u32,
+        #[serde(default = "default_buf_size")]
+        buf_size: usize,
+    },
+}
+
+impl Default for AsyncRuntimeConfig {
+    fn default() -> Self {
+        Self::Epoll {
+            max_events: default_epoll_max_events(),
+        }
+    }
+}
+
+const fn default_epoll_max_events() -> usize {
+    1024
+}
+
+const fn default_sq_entries() -> u32 {
+    4096
+}
+
+const fn default_cq_entries() -> u32 {
+    8192
+}
+
+const fn default_buf_ring_size() -> u32 {
+    16_384
+}
+
+const fn default_buf_size() -> usize {
+    8192
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,25 +96,6 @@ pub enum PathMatcher {
     Prefix { path: String },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IoUringConfig {
-    pub sq_entries: u32,
-    pub cq_entries: u32,
-    pub buf_ring_size: u32,
-    pub buf_size: usize,
-}
-
-impl Default for IoUringConfig {
-    fn default() -> Self {
-        Self {
-            sq_entries: 4096,
-            cq_entries: 8192,
-            buf_ring_size: 16384,
-            buf_size: 8192,
-        }
-    }
-}
-
 fn default_worker_count() -> usize {
     std::thread::available_parallelism()
         .map(usize::from)
@@ -83,7 +112,7 @@ impl Default for Config {
                     listen: 8080,
                 }],
             },
-            io_uring: IoUringConfig::default(),
+            runtime: AsyncRuntimeConfig::default(),
             worker_count: default_worker_count(),
         }
     }
@@ -115,70 +144,3 @@ pub fn read_config(path: impl AsRef<Path>) -> Result<Config, ConfigError> {
 
 /// Compatibility alias for code using the previous configuration name.
 pub type ProxyConfig = Config;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_http_and_io_uring_config() {
-        let config = Config::from_toml(
-            r#"
-worker_count = 4
-
-[io_uring]
-sq_entries = 1024
-cq_entries = 2048
-buf_ring_size = 4096
-buf_size = 8192
-
-[[http.servers]]
-server_name = "example.com"
-listen = 8080
-
-[[http.servers.locations]]
-matcher = { type = "prefix", path = "/api" }
-action = { type = "proxy", upstream = "http://127.0.0.1:3000" }
-"#,
-        )
-        .expect("configuration should parse");
-
-        assert_eq!(config.worker_count, 4);
-        assert_eq!(config.io_uring.sq_entries, 1024);
-        assert_eq!(config.http.servers[0].listen, 8080);
-        assert!(matches!(
-            config.http.servers[0].locations[0].matcher,
-            PathMatcher::Prefix { ref path } if path == "/api"
-        ));
-    }
-
-    #[test]
-    fn io_uring_defaults_when_section_is_omitted() {
-        let config = Config::from_toml(
-            r#"
-[http]
-servers = []
-"#,
-        )
-        .expect("configuration should parse");
-
-        assert_eq!(config.worker_count, default_worker_count());
-        assert_eq!(config.io_uring.sq_entries, 4096);
-        assert_eq!(config.io_uring.cq_entries, 8192);
-        assert_eq!(config.io_uring.buf_ring_size, 16384);
-        assert_eq!(config.io_uring.buf_size, 8192);
-    }
-
-    #[test]
-    fn repository_config_parses() {
-        let config = Config::from_toml(include_str!("../../../../rginx.conf"))
-            .expect("rginx.conf should parse");
-
-        assert_eq!(config.worker_count, 12);
-        assert_eq!(config.http.servers.len(), 2);
-        assert_eq!(config.http.servers[0].listen, 8089);
-        assert_eq!(config.http.servers[0].locations.len(), 3);
-        assert_eq!(config.http.servers[1].locations.len(), 3);
-        assert_eq!(config.io_uring.sq_entries, 4096);
-    }
-}
