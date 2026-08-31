@@ -1,7 +1,7 @@
 use proxy_common::{AsyncRuntimeConfig, Config};
 use std::{io, net::TcpListener};
 
-use crate::bind_worker_listeners;
+use crate::{bind_worker_listeners, run_epoll};
 
 pub fn start_worker(cpu_id: usize, config: &Config) -> io::Result<()> {
     pin_to_cpu(cpu_id)?;
@@ -36,71 +36,6 @@ fn pin_to_cpu(cpu_id: usize) -> io::Result<()> {
     } else {
         Err(io::Error::other("failed to set worker CPU affinity"))
     }
-}
-
-#[cfg(target_os = "linux")]
-pub fn run_epoll(listeners: Vec<std::net::TcpListener>, max_events: usize) -> std::io::Result<()> {
-    use mio::{net::TcpListener, Events, Interest, Poll, Token};
-    use std::io::ErrorKind;
-
-    let mut poll = Poll::new()?;
-    let mut events = Events::with_capacity(max_events.max(1));
-
-    // `bind_worker_listener` already made these sockets nonblocking.
-    let mut listeners: Vec<TcpListener> =
-        listeners.into_iter().map(TcpListener::from_std).collect();
-
-    // Token(0..N) identifies the corresponding listening socket.
-    for (index, listener) in listeners.iter_mut().enumerate() {
-        poll.registry()
-            .register(listener, Token(index), Interest::READABLE)?;
-    }
-
-    loop {
-        poll.poll(&mut events, None)?;
-
-        for event in events.iter() {
-            if !event.is_readable() {
-                continue;
-            }
-
-            let listener_index = event.token().0;
-            let listener = &mut listeners[listener_index];
-
-            // Important: drain accepts until WouldBlock.
-            loop {
-                match listener.accept() {
-                    Ok((stream, peer_address)) => {
-                        println!("accepted connection from {peer_address}");
-
-                        // Temporary first milestone: close it immediately.
-                        // Dropping `stream` closes the connection.
-                        drop(stream);
-                    }
-
-                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                        break;
-                    }
-
-                    Err(error) => {
-                        eprintln!("accept failed on listener {}: {}", listener_index, error);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn run_epoll(
-    _listeners: Vec<std::net::TcpListener>,
-    _max_events: usize,
-) -> std::io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "epoll is only supported on Linux",
-    ))
 }
 
 #[cfg(target_os = "linux")]
