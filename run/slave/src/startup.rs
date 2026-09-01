@@ -1,33 +1,38 @@
 use proxy_common::{AsyncRuntimeConfig, Config};
 use std::io;
 
-use crate::{bind_worker_listeners, run_epoll_with_shutdown, BoundListener, ShutdownHandle};
+use crate::{
+    bind_worker_listeners, EpollRuntime, IoUringRuntime, Runtime, ShutdownHandle, WorkerContext,
+};
 
 pub fn start_worker(cpu_id: usize, config: &Config) -> io::Result<()> {
     let shutdown = ShutdownHandle::new();
     install_shutdown_signals(&shutdown)?;
     pin_to_cpu(cpu_id)?;
     let listeners = bind_worker_listeners(config)?;
+    let context = WorkerContext {
+        listeners,
+        servers: config.http.servers.clone(),
+        shutdown,
+    };
 
     match &config.runtime {
-        AsyncRuntimeConfig::Epoll { max_events } => run_epoll_with_shutdown(
-            listeners,
-            config.http.servers.clone(),
-            *max_events,
-            shutdown,
-        ),
+        AsyncRuntimeConfig::Epoll { max_events } => EpollRuntime {
+            max_events: *max_events,
+        }
+        .run(context),
         AsyncRuntimeConfig::IoUring {
             sq_entries,
             cq_entries,
             buf_ring_size,
             buf_size,
-        } => run_io_uring(
-            listeners,
-            *sq_entries,
-            *cq_entries,
-            *buf_ring_size,
-            *buf_size,
-        ),
+        } => IoUringRuntime {
+            sq_entries: *sq_entries,
+            cq_entries: *cq_entries,
+            buf_ring_size: *buf_ring_size,
+            buf_size: *buf_size,
+        }
+        .run(context),
     }
 }
 
@@ -53,33 +58,4 @@ fn pin_to_cpu(cpu_id: usize) -> io::Result<()> {
     } else {
         Err(io::Error::other("failed to set worker CPU affinity"))
     }
-}
-
-#[cfg(target_os = "linux")]
-pub fn run_io_uring(
-    listeners: Vec<BoundListener>,
-    sq_entries: u32,
-    cq_entries: u32,
-    buf_ring_size: u32,
-    buf_size: usize,
-) -> io::Result<()> {
-    let _ = (listeners, sq_entries, cq_entries, buf_ring_size, buf_size);
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "io_uring runtime has not been implemented yet",
-    ))
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn run_io_uring(
-    _listeners: Vec<BoundListener>,
-    _sq_entries: u32,
-    _cq_entries: u32,
-    _buf_ring_size: u32,
-    _buf_size: usize,
-) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "io_uring is only supported on Linux",
-    ))
 }

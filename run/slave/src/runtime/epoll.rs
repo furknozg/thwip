@@ -1,3 +1,4 @@
+use super::{Runtime, ShutdownHandle, WorkerContext};
 use crate::BoundListener;
 #[cfg(target_os = "linux")]
 use crate::{parse_request_head, response_bytes, route, static_response_bytes, RequestHeadParse};
@@ -8,36 +9,12 @@ use proxy_common::Action;
 use proxy_common::Server;
 #[cfg(target_os = "linux")]
 use slab::Slab;
+use std::io;
 #[cfg(target_os = "linux")]
 use std::time::Duration;
-use std::{
-    io,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-};
 
-#[derive(Clone, Default)]
-pub struct ShutdownHandle(Arc<AtomicBool>);
-
-impl ShutdownHandle {
-    pub fn new() -> Self {
-        Self(Arc::new(AtomicBool::new(false)))
-    }
-
-    pub fn request(&self) {
-        self.0.store(true, Ordering::Release);
-    }
-
-    pub fn flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.0)
-    }
-
-    #[cfg(target_os = "linux")]
-    fn is_requested(&self) -> bool {
-        self.0.load(Ordering::Acquire)
-    }
+pub struct EpollRuntime {
+    pub max_events: usize,
 }
 
 #[cfg(target_os = "linux")]
@@ -68,11 +45,12 @@ struct RegisteredListener {
 
 #[cfg(target_os = "linux")]
 impl EpollWorker {
-    fn new(
-        listeners: Vec<BoundListener>,
-        servers: Vec<Server>,
-        shutdown: ShutdownHandle,
-    ) -> io::Result<Self> {
+    fn new(context: WorkerContext) -> io::Result<Self> {
+        let WorkerContext {
+            listeners,
+            servers,
+            shutdown,
+        } = context;
         let poll = Poll::new()?;
         let mut listeners: Vec<RegisteredListener> = listeners
             .into_iter()
@@ -321,6 +299,23 @@ impl EpollWorker {
     }
 }
 
+impl Runtime for EpollRuntime {
+    fn run(self, context: WorkerContext) -> io::Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            EpollWorker::new(context)?.run(self.max_events)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = context;
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "epoll is only supported on Linux",
+            ))
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub fn run_epoll(
     listeners: Vec<BoundListener>,
@@ -337,7 +332,11 @@ pub fn run_epoll_with_shutdown(
     max_events: usize,
     shutdown: ShutdownHandle,
 ) -> io::Result<()> {
-    EpollWorker::new(listeners, servers, shutdown)?.run(max_events)
+    EpollRuntime { max_events }.run(WorkerContext {
+        listeners,
+        servers,
+        shutdown,
+    })
 }
 
 #[cfg(not(target_os = "linux"))]
