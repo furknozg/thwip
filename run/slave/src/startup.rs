@@ -3,7 +3,7 @@ use std::io;
 
 use crate::{
     bind_worker_listeners, EpollRuntime, IoUringRuntime, KqueueRuntime, Runtime, ShutdownHandle,
-    WorkerContext,
+    WorkerContext, WorkerLimits,
 };
 
 pub fn start_worker(cpu_id: usize, config: &Config) -> io::Result<()> {
@@ -15,6 +15,7 @@ pub fn start_worker(cpu_id: usize, config: &Config) -> io::Result<()> {
         listener_groups,
         servers: config.http.servers.clone(),
         shutdown,
+        limits: WorkerLimits::from_config(&config.worker),
     };
 
     match &config.runtime {

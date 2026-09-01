@@ -1,4 +1,4 @@
-use super::{Runtime, ShutdownHandle, WorkerContext};
+use super::{Runtime, ShutdownHandle, WorkerContext, WorkerLimits};
 use crate::BoundListenerGroup;
 #[cfg(unix)]
 use crate::{
@@ -14,7 +14,12 @@ use proxy_common::Server;
 use slab::Slab;
 use std::io;
 #[cfg(unix)]
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+#[cfg(unix)]
+const MAX_READS_PER_EVENT: usize = 16;
+#[cfg(unix)]
+const MAX_WRITES_PER_EVENT: usize = 16;
 
 pub struct EpollRuntime {
     pub max_events: usize,
@@ -28,6 +33,7 @@ struct Connection {
     write_offset: usize,
     request_head_complete: bool,
     listener_group: usize,
+    last_progress: Instant,
 }
 
 #[cfg(unix)]
@@ -37,7 +43,9 @@ struct EpollWorker {
     connections: Slab<Connection>,
     servers: Vec<Server>,
     shutdown: ShutdownHandle,
+    limits: WorkerLimits,
     draining: bool,
+    drain_started_at: Option<Instant>,
 }
 
 #[cfg(unix)]
@@ -54,6 +62,7 @@ impl EpollWorker {
             listener_groups,
             servers,
             shutdown,
+            limits,
         } = context;
         let poll = Poll::new()?;
         let mut listeners: Vec<RegisteredListener> = listener_groups
@@ -76,7 +85,9 @@ impl EpollWorker {
             connections: Slab::new(),
             servers,
             shutdown,
+            limits,
             draining: false,
+            drain_started_at: None,
         })
     }
 
@@ -90,26 +101,50 @@ impl EpollWorker {
             if self.draining && self.connections.is_empty() {
                 return Ok(());
             }
+            if self.drain_deadline_expired() {
+                self.close_all_connections();
+                return Ok(());
+            }
+            self.close_idle_connections()?;
 
             self.poll
                 .poll(&mut events, Some(Duration::from_millis(100)))?;
-            let ready: Vec<(Token, bool, bool)> = events
+            let ready: Vec<(Token, bool, bool, bool, bool, bool)> = events
                 .iter()
-                .map(|event| (event.token(), event.is_readable(), event.is_writable()))
+                .map(|event| {
+                    (
+                        event.token(),
+                        event.is_readable(),
+                        event.is_writable(),
+                        event.is_error(),
+                        event.is_read_closed(),
+                        event.is_write_closed(),
+                    )
+                })
                 .collect();
 
-            for (token, readable, writable) in ready {
+            for (token, readable, writable, error, read_closed, write_closed) in ready {
                 if token.0 < self.listeners.len() {
                     if readable && !self.draining {
                         self.accept_ready(token.0)?;
                     }
                 } else {
                     let connection_id = token.0 - self.listeners.len();
+                    if error || write_closed {
+                        self.remove_connection(connection_id)?;
+                        continue;
+                    }
                     if writable {
                         self.write_ready(connection_id)?;
                     }
                     if readable && !self.draining {
                         self.connection_ready(connection_id)?;
+                    }
+                    if read_closed && self.connections.contains(connection_id) {
+                        let connection = &self.connections[connection_id];
+                        if connection.write_offset == connection.write_buffer.len() {
+                            self.remove_connection(connection_id)?;
+                        }
                     }
                 }
             }
@@ -120,6 +155,10 @@ impl EpollWorker {
         loop {
             match self.listeners[listener_index].socket.accept() {
                 Ok((stream, peer_address)) => {
+                    if self.connections.len() >= self.limits.max_connections {
+                        eprintln!("connection limit reached; dropping {peer_address}");
+                        continue;
+                    }
                     println!("accepted connection from {peer_address}");
                     self.register_connection(stream, listener_index)?;
                 }
@@ -140,6 +179,7 @@ impl EpollWorker {
             write_offset: 0,
             request_head_complete: false,
             listener_group,
+            last_progress: Instant::now(),
         });
         let token = Token(self.listeners.len() + connection_id);
 
@@ -156,6 +196,7 @@ impl EpollWorker {
         }
 
         let mut close_connection = false;
+        let mut request_too_large = false;
         let mut request: Option<RequestHead> = None;
         let mut listener_group = 0;
         {
@@ -164,14 +205,20 @@ impl EpollWorker {
             let connection = &mut self.connections[connection_id];
             let mut buffer = [0_u8; 8 * 1024];
 
-            loop {
+            for _ in 0..MAX_READS_PER_EVENT {
                 match connection.socket.read(&mut buffer) {
                     Ok(0) => {
                         close_connection = true;
                         break;
                     }
                     Ok(read) => {
+                        if connection.read_buffer.len() + read > self.limits.max_read_buffer_size {
+                            request_too_large = true;
+                            connection.request_head_complete = true;
+                            break;
+                        }
                         connection.read_buffer.extend_from_slice(&buffer[..read]);
+                        connection.last_progress = Instant::now();
 
                         if !connection.request_head_complete {
                             match parse_request_head(&connection.read_buffer) {
@@ -204,7 +251,9 @@ impl EpollWorker {
             }
         }
 
-        if let Some(request) = request {
+        if request_too_large {
+            self.queue_response(connection_id, response_bytes(413, "request is too large"))?;
+        } else if let Some(request) = request {
             let Some(listener) = self.listeners.get(listener_group) else {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -218,14 +267,7 @@ impl EpollWorker {
                 &self.servers,
             );
             let response = self.response_for(server_index, &request.method, &request.target);
-            let connection = &mut self.connections[connection_id];
-            connection.write_buffer = response;
-            connection.write_offset = 0;
-            self.poll.registry().reregister(
-                &mut connection.socket,
-                Token(self.listeners.len() + connection_id),
-                Interest::WRITABLE,
-            )?;
+            self.queue_response(connection_id, response)?;
         }
 
         if close_connection {
@@ -240,11 +282,15 @@ impl EpollWorker {
             return Ok(());
         }
 
+        let mut write_failed = false;
         {
             use std::io::Write;
 
             let connection = &mut self.connections[connection_id];
-            while connection.write_offset < connection.write_buffer.len() {
+            for _ in 0..MAX_WRITES_PER_EVENT {
+                if connection.write_offset == connection.write_buffer.len() {
+                    break;
+                }
                 match connection
                     .socket
                     .write(&connection.write_buffer[connection.write_offset..])
@@ -255,14 +301,28 @@ impl EpollWorker {
                             "socket write returned zero",
                         ))
                     }
-                    Ok(written) => connection.write_offset += written,
+                    Ok(written) => {
+                        connection.write_offset += written;
+                        connection.last_progress = Instant::now();
+                    }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
-                    Err(error) => return Err(error),
+                    Err(error) => {
+                        eprintln!("connection write failed: {error}");
+                        write_failed = true;
+                        break;
+                    }
                 }
             }
         }
 
-        self.remove_connection(connection_id)?;
+        if write_failed {
+            self.remove_connection(connection_id)?;
+        } else if self.connections.contains(connection_id)
+            && self.connections[connection_id].write_offset
+                == self.connections[connection_id].write_buffer.len()
+        {
+            self.remove_connection(connection_id)?;
+        }
 
         Ok(())
     }
@@ -286,8 +346,11 @@ impl EpollWorker {
 
     fn begin_shutdown(&mut self) -> io::Result<()> {
         self.draining = true;
+        self.drain_started_at = Some(Instant::now());
         for listener in &mut self.listeners {
-            self.poll.registry().deregister(&mut listener.socket)?;
+            if let Err(error) = self.poll.registry().deregister(&mut listener.socket) {
+                eprintln!("failed to deregister listener during shutdown: {error}");
+            }
         }
 
         // Preserve only responses already queued for writing. There is no
@@ -308,9 +371,60 @@ impl EpollWorker {
     fn remove_connection(&mut self, connection_id: usize) -> io::Result<()> {
         if self.connections.contains(connection_id) {
             let mut connection = self.connections.remove(connection_id);
-            self.poll.registry().deregister(&mut connection.socket)?;
+            if let Err(error) = self.poll.registry().deregister(&mut connection.socket) {
+                eprintln!("failed to deregister connection: {error}");
+            }
         }
         Ok(())
+    }
+
+    fn queue_response(&mut self, connection_id: usize, mut response: Vec<u8>) -> io::Result<()> {
+        if !self.connections.contains(connection_id) {
+            return Ok(());
+        }
+        if response.len() > self.limits.max_write_buffer_size {
+            response = response_bytes(500, "response is too large");
+        }
+
+        let connection = &mut self.connections[connection_id];
+        connection.write_buffer = response;
+        connection.write_offset = 0;
+        self.poll.registry().reregister(
+            &mut connection.socket,
+            Token(self.listeners.len() + connection_id),
+            Interest::WRITABLE,
+        )
+    }
+
+    fn close_idle_connections(&mut self) -> io::Result<()> {
+        let now = Instant::now();
+        let expired: Vec<usize> = self
+            .connections
+            .iter()
+            .filter_map(|(id, connection)| {
+                (now.duration_since(connection.last_progress) >= self.limits.idle_timeout)
+                    .then_some(id)
+            })
+            .collect();
+        for connection_id in expired {
+            eprintln!("connection {connection_id} timed out");
+            self.remove_connection(connection_id)?;
+        }
+        Ok(())
+    }
+
+    fn drain_deadline_expired(&self) -> bool {
+        self.drain_started_at
+            .is_some_and(|started| started.elapsed() >= self.limits.drain_timeout)
+    }
+
+    fn close_all_connections(&mut self) {
+        let ids: Vec<usize> = self.connections.iter().map(|(id, _)| id).collect();
+        for connection_id in ids {
+            if let Err(error) = self.remove_connection(connection_id) {
+                eprintln!("failed to close connection during shutdown: {error}");
+            }
+        }
     }
 }
 
@@ -351,6 +465,7 @@ pub fn run_epoll_with_shutdown(
         listener_groups,
         servers,
         shutdown,
+        limits: WorkerLimits::default(),
     })
 }
 

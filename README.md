@@ -60,8 +60,12 @@ files. Proxying, keep-alive, and the `io_uring` runtime remain pending.
   an exact, case-insensitive `Host` match selects another configured server.
 - [ ] Add a Linux integration test: start two workers on the same loopback port,
   verify both binds succeed, and verify all listeners close during shutdown.
-- [ ] Implement connection lifecycle and backpressure limits (maximum open
-  connections, input/output buffer limits, and request timeouts).
+- [x] Add initial connection lifecycle safeguards: a per-worker connection
+  cap, bounded input/output buffers, idle-connection timeout, bounded per-event
+  read/write work, and a shutdown drain deadline.
+- [x] Configure those safeguards in the shared `[worker]` section, with safe
+  defaults and zero-value rejection.
+- [ ] Add overload and slow-client coverage for the configured safeguards.
 - [x] Implement incremental HTTP/1.x request-head parsing with malformed-head
   and request-head-size errors.
 - [x] Implement fixed `response` actions with HTTP/1.1 framing and
@@ -92,8 +96,9 @@ files. Proxying, keep-alive, and the `io_uring` runtime remain pending.
   events.
 - [x] Maintain per-connection read/write state and only subscribe to writable
   events while output is pending.
-- [ ] Handle `EPOLLERR`, `EPOLLHUP`, `EPOLLRDHUP`, interrupted syscalls, and
-  descriptor reuse safely.
+- [ ] Add native `epoll` handling for `EPOLLERR`, `EPOLLHUP`, `EPOLLRDHUP`,
+  interrupted syscalls, and descriptor reuse. The shared `mio` loop closes
+  reported socket errors and read/write closures today.
 - [ ] Add an `eventfd`/pipe wake-up mechanism for control messages and shutdown.
 - [ ] Test slow clients, partial writes, half-closed connections, and file
   descriptor exhaustion.

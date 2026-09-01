@@ -11,7 +11,7 @@ use slave::EpollRuntime;
     target_os = "dragonfly"
 ))]
 use slave::KqueueRuntime;
-use slave::{BoundListenerGroup, Runtime, ShutdownHandle, WorkerContext};
+use slave::{BoundListenerGroup, Runtime, ShutdownHandle, WorkerContext, WorkerLimits};
 use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
@@ -84,6 +84,7 @@ fn routes_shared_listener_by_host_and_uses_its_default_server() {
             server("two.test", "two", address),
         ],
         shutdown: shutdown.clone(),
+        limits: WorkerLimits::default(),
     };
 
     let worker = thread::spawn(move || run_readiness(context));

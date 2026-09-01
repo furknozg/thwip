@@ -1,6 +1,13 @@
 # Completion-based Linux runtime. Requires a compatible Linux kernel.
 worker_count = 4
 
+[worker]
+max_connections = 1024
+max_read_buffer_size = 65536
+max_write_buffer_size = 8388608
+idle_timeout_ms = 30000
+drain_timeout_ms = 10000
+
 [runtime]
 type = "io_uring"
 sq_entries = 4096

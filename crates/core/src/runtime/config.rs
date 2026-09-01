@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use std::{
     fs,
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -16,6 +16,56 @@ pub struct Config {
     /// Defaults to one worker per logical CPU available to this process.
     #[serde(default = "default_worker_count")]
     pub worker_count: usize,
+
+    #[serde(default)]
+    pub worker: WorkerConfig,
+}
+
+/// Limits shared by every worker runtime. Durations are expressed in
+/// milliseconds in TOML to keep the configuration format unambiguous.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerConfig {
+    #[serde(
+        default = "default_max_connections",
+        deserialize_with = "deserialize_positive_usize"
+    )]
+    pub max_connections: usize,
+
+    #[serde(
+        default = "default_max_read_buffer_size",
+        deserialize_with = "deserialize_positive_usize"
+    )]
+    pub max_read_buffer_size: usize,
+
+    #[serde(
+        default = "default_max_write_buffer_size",
+        deserialize_with = "deserialize_positive_usize"
+    )]
+    pub max_write_buffer_size: usize,
+
+    #[serde(
+        default = "default_idle_timeout_ms",
+        deserialize_with = "deserialize_positive_u64"
+    )]
+    pub idle_timeout_ms: u64,
+
+    #[serde(
+        default = "default_drain_timeout_ms",
+        deserialize_with = "deserialize_positive_u64"
+    )]
+    pub drain_timeout_ms: u64,
+}
+
+impl Default for WorkerConfig {
+    fn default() -> Self {
+        Self {
+            max_connections: default_max_connections(),
+            max_read_buffer_size: default_max_read_buffer_size(),
+            max_write_buffer_size: default_max_write_buffer_size(),
+            idle_timeout_ms: default_idle_timeout_ms(),
+            drain_timeout_ms: default_drain_timeout_ms(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +126,48 @@ const fn default_buf_size() -> usize {
     8192
 }
 
+const fn default_max_connections() -> usize {
+    1_024
+}
+
+const fn default_max_read_buffer_size() -> usize {
+    64 * 1024
+}
+
+const fn default_max_write_buffer_size() -> usize {
+    8 * 1024 * 1024
+}
+
+const fn default_idle_timeout_ms() -> u64 {
+    30_000
+}
+
+const fn default_drain_timeout_ms() -> u64 {
+    10_000
+}
+
+fn deserialize_positive_usize<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = usize::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(D::Error::custom("worker limit must be greater than zero"));
+    }
+    Ok(value)
+}
+
+fn deserialize_positive_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = u64::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(D::Error::custom("worker timeout must be greater than zero"));
+    }
+    Ok(value)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Server {
     #[serde(default)]
@@ -123,6 +215,7 @@ impl Default for Config {
             },
             runtime: AsyncRuntimeConfig::default(),
             worker_count: default_worker_count(),
+            worker: WorkerConfig::default(),
         }
     }
 }
