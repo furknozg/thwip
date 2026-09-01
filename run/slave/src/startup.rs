@@ -2,7 +2,8 @@ use proxy_common::{AsyncRuntimeConfig, Config};
 use std::io;
 
 use crate::{
-    bind_worker_listeners, EpollRuntime, IoUringRuntime, Runtime, ShutdownHandle, WorkerContext,
+    bind_worker_listeners, EpollRuntime, IoUringRuntime, KqueueRuntime, Runtime, ShutdownHandle,
+    WorkerContext,
 };
 
 pub fn start_worker(cpu_id: usize, config: &Config) -> io::Result<()> {
@@ -18,6 +19,10 @@ pub fn start_worker(cpu_id: usize, config: &Config) -> io::Result<()> {
 
     match &config.runtime {
         AsyncRuntimeConfig::Epoll { max_events } => EpollRuntime {
+            max_events: *max_events,
+        }
+        .run(context),
+        AsyncRuntimeConfig::Kqueue { max_events } => KqueueRuntime {
             max_events: *max_events,
         }
         .run(context),
@@ -46,6 +51,7 @@ fn install_shutdown_signals(shutdown: &ShutdownHandle) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn pin_to_cpu(cpu_id: usize) -> io::Result<()> {
     let core_ids = core_affinity::get_core_ids()
         .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "CPU affinity is unavailable"))?;
@@ -58,4 +64,10 @@ fn pin_to_cpu(cpu_id: usize) -> io::Result<()> {
     } else {
         Err(io::Error::other("failed to set worker CPU affinity"))
     }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn pin_to_cpu(_cpu_id: usize) -> io::Result<()> {
+    // kqueue platforms run without explicit CPU pinning
+    Ok(())
 }

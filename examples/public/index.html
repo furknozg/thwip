@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Thwip</title>
+    <style>
+      :root { color-scheme: dark; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      body { max-width: 760px; margin: 4rem auto; padding: 0 1.5rem; line-height: 1.6; color: #e8edf5; background: #10151e; }
+      h1 { margin-bottom: 0.2rem; font-size: clamp(2.5rem, 9vw, 5rem); letter-spacing: -0.08em; }
+      .tagline { color: #89f0ba; font-size: 1.1rem; }
+      section { margin-top: 2.5rem; padding: 1.25rem; border: 1px solid #2b3749; border-radius: 10px; background: #151d29; }
+      code { color: #89f0ba; }
+      a { color: #91c7ff; }
+    </style>
+  </head>
+  <body>
+    <h1>thwip</h1>
+    <p class="tagline">A small experimental HTTP server and reverse proxy.</p>
+
+    <section>
+      <h2>Static Serving</h2>
+      <p>
+        Thwip resolved this file from its configured static directory and sent
+        it directly to your browser. No application backend is involved.
+      </p>
+    </section>
+
+    <section>
+      <h2>Current capabilities</h2>
+      <ul>
+        <li>Worker-owned listeners with <code>SO_REUSEPORT</code>.</li>
+        <li><code>epoll</code> on Linux and <code>kqueue</code> on macOS/BSD.</li>
+        <li>HTTP/1.x request-head parsing and exact/prefix routing.</li>
+        <li>Fixed responses and safe, small static files.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Try it</h2>
+      <p><a href="/health">/health</a> returns Thwip's built-in health response.</p>
+      <p><a href="/hello.txt">/hello.txt</a> is another file from this static directory.</p>
+    </section>
+  </body>
+</html>

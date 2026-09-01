@@ -37,6 +37,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         AsyncRuntimeConfig::Epoll { max_events } => {
             println!("Runtime: epoll (max events: {})", max_events);
         }
+        AsyncRuntimeConfig::Kqueue { max_events } => {
+            println!("Runtime: kqueue (max events: {})", max_events);
+        }
         AsyncRuntimeConfig::IoUring {
             sq_entries,
             cq_entries,

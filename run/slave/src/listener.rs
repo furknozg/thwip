@@ -31,7 +31,14 @@ pub fn bind_worker_listener(address: SocketAddr, backlog: i32) -> io::Result<Tcp
     // The one-listener-per-worker model relies on Linux SO_REUSEPORT. Other
     // platforms can still build and exercise the socket factory, but do not
     // provide the project's epoll/io_uring runtime support.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "dragonfly"
+    ))]
     socket.set_reuse_port(true)?;
 
     socket.set_nonblocking(true)?;

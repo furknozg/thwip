@@ -1,13 +1,8 @@
 worker_count = 12
 
 [runtime]
-type = "epoll"
+type = "kqueue"
 max_events = 1024
-sq_entries = 4096
-cq_entries = 8192
-buf_ring_size = 16384
-buf_size = 8192
-
 
 [[http.servers]]
 server_name = "127.0.0.1"
@@ -15,48 +10,28 @@ listen = "127.0.0.1:8082"
 
 [[http.servers.locations]]
 matcher = { type = "prefix", path = "/" }
-
-[http.servers.locations.action]
-type = "static"
-directory = "./public"
+action = { type = "static", directory = "./public" }
 
 [[http.servers.locations]]
 matcher = { type = "prefix", path = "/api" }
-
-[http.servers.locations.action]
-type = "proxy"
-upstream = "http://127.0.0.1:8080"
+action = { type = "proxy", upstream = "http://127.0.0.1:8080" }
 
 [[http.servers.locations]]
 matcher = { type = "exact", path = "/health" }
-
-[http.servers.locations.action]
-type = "response"
-status = 200
-body = "OK"
+action = { type = "response", status = 200, body = "OK" }
 
 [[http.servers]]
 server_name = "127.0.0.1"
-listen = "127.0.0.1:8081" # currently same port binding is not supported
+listen = "127.0.0.1:8081"
 
 [[http.servers.locations]]
 matcher = { type = "prefix", path = "/" }
-
-[http.servers.locations.action]
-type = "static"
-directory = "./public"
+action = { type = "static", directory = "./examples/public" }
 
 [[http.servers.locations]]
 matcher = { type = "prefix", path = "/api" }
-
-[http.servers.locations.action]
-type = "proxy"
-upstream = "http://127.0.0.1:8080"
+action = { type = "proxy", upstream = "http://127.0.0.1:8084" }
 
 [[http.servers.locations]]
 matcher = { type = "exact", path = "/health" }
-
-[http.servers.locations.action]
-type = "response"
-status = 200
-body = "OK"
+action = { type = "response", status = 200, body = "OK" }

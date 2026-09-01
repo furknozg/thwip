@@ -31,6 +31,11 @@ pub enum AsyncRuntimeConfig {
         max_events: usize,
     },
 
+    Kqueue {
+        #[serde(default = "default_epoll_max_events")]
+        max_events: usize,
+    },
+
     IoUring {
         #[serde(default = "default_sq_entries")]
         sq_entries: u32,

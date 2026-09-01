@@ -1,23 +1,23 @@
 use super::{Runtime, ShutdownHandle, WorkerContext};
 use crate::BoundListener;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use crate::{parse_request_head, response_bytes, route, static_response_bytes, RequestHeadParse};
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use mio::{net::TcpListener, net::TcpStream, Events, Interest, Poll, Token};
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use proxy_common::Action;
 use proxy_common::Server;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use slab::Slab;
 use std::io;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use std::time::Duration;
 
 pub struct EpollRuntime {
     pub max_events: usize,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 struct Connection {
     socket: TcpStream,
     read_buffer: Vec<u8>,
@@ -27,7 +27,7 @@ struct Connection {
     server_index: usize,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 struct EpollWorker {
     poll: Poll,
     listeners: Vec<RegisteredListener>,
@@ -37,13 +37,13 @@ struct EpollWorker {
     draining: bool,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 struct RegisteredListener {
     socket: TcpListener,
     server_index: usize,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 impl EpollWorker {
     fn new(context: WorkerContext) -> io::Result<Self> {
         let WorkerContext {
@@ -221,7 +221,6 @@ impl EpollWorker {
             return Ok(());
         }
 
-        let mut finished = false;
         {
             use std::io::Write;
 
@@ -242,12 +241,9 @@ impl EpollWorker {
                     Err(error) => return Err(error),
                 }
             }
-            finished = true;
         }
 
-        if finished {
-            self.remove_connection(connection_id)?;
-        }
+        self.remove_connection(connection_id)?;
 
         Ok(())
     }
@@ -303,7 +299,7 @@ impl Runtime for EpollRuntime {
     fn run(self, context: WorkerContext) -> io::Result<()> {
         #[cfg(target_os = "linux")]
         {
-            EpollWorker::new(context)?.run(self.max_events)
+            run_readiness(context, self.max_events)
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -316,7 +312,7 @@ impl Runtime for EpollRuntime {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub fn run_epoll(
     listeners: Vec<BoundListener>,
     servers: Vec<Server>,
@@ -325,7 +321,7 @@ pub fn run_epoll(
     run_epoll_with_shutdown(listeners, servers, max_events, ShutdownHandle::new())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub fn run_epoll_with_shutdown(
     listeners: Vec<BoundListener>,
     servers: Vec<Server>,
@@ -339,7 +335,12 @@ pub fn run_epoll_with_shutdown(
     })
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(unix)]
+pub(crate) fn run_readiness(context: WorkerContext, max_events: usize) -> io::Result<()> {
+    EpollWorker::new(context)?.run(max_events)
+}
+
+#[cfg(not(unix))]
 pub fn run_epoll(
     _listeners: Vec<BoundListener>,
     _servers: Vec<Server>,
@@ -351,7 +352,7 @@ pub fn run_epoll(
     ))
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(unix))]
 pub fn run_epoll_with_shutdown(
     listeners: Vec<BoundListener>,
     servers: Vec<Server>,

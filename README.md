@@ -51,7 +51,7 @@ Static files, proxying, keep-alive, and the `io_uring` runtime remain pending.
 - [x] Define an explicit `SocketAddr` listener address (IP address plus port)
   instead of treating `listen` as a port-only field; the generated default is
   `0.0.0.0:8089`.
-- [ ] Validate duplicate listen addresses once per config, while allowing every
+- [x] Validate duplicate listen addresses once per config, while allowing every
   worker to bind the same address through `SO_REUSEPORT`.
 - [ ] Add a Linux integration test: start two workers on the same loopback port,
   verify both binds succeed, and verify all listeners close during shutdown.

@@ -64,12 +64,19 @@ pub fn serve_static(
     let target = parse_request_target(raw_target)?;
     let root = fs::canonicalize(root).map_err(map_io_error)?;
     let relative = relative_path(&target.path)?;
-    let candidate = fs::canonicalize(root.join(relative)).map_err(map_io_error)?;
+    let mut candidate = fs::canonicalize(root.join(relative)).map_err(map_io_error)?;
     if !candidate.starts_with(&root) {
         return Err(StaticError::Forbidden);
     }
 
-    let metadata = fs::metadata(&candidate).map_err(map_io_error)?;
+    let mut metadata = fs::metadata(&candidate).map_err(map_io_error)?;
+    if metadata.is_dir() {
+        candidate = fs::canonicalize(candidate.join("index.html")).map_err(map_io_error)?;
+        if !candidate.starts_with(&root) {
+            return Err(StaticError::Forbidden);
+        }
+        metadata = fs::metadata(&candidate).map_err(map_io_error)?;
+    }
     if !metadata.is_file() {
         return Err(StaticError::NotFound);
     }
@@ -208,6 +215,9 @@ mod tests {
                 .content_length,
             5
         );
+
+        fs::write(root.join("index.html"), "home").unwrap();
+        assert_eq!(serve_static(&root, "GET", "/").unwrap().bytes, b"home");
         fs::remove_dir_all(root).unwrap();
     }
 }

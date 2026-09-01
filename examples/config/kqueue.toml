@@ -1,0 +1,9 @@
+# Readiness-based macOS/BSD runtime.
+worker_count = 4
+
+[runtime]
+type = "kqueue"
+max_events = 2048
+
+[http]
+servers = []
