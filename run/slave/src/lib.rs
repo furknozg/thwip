@@ -7,7 +7,7 @@ pub use http::{
 };
 
 mod epoll;
-pub use epoll::run_epoll;
+pub use epoll::{run_epoll, run_epoll_with_shutdown, ShutdownHandle};
 
 mod router;
 pub use router::{response_bytes, route};

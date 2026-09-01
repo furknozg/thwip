@@ -8,7 +8,37 @@ use proxy_common::Action;
 use proxy_common::Server;
 #[cfg(target_os = "linux")]
 use slab::Slab;
-use std::io;
+#[cfg(target_os = "linux")]
+use std::time::Duration;
+use std::{
+    io,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
+
+#[derive(Clone, Default)]
+pub struct ShutdownHandle(Arc<AtomicBool>);
+
+impl ShutdownHandle {
+    pub fn new() -> Self {
+        Self(Arc::new(AtomicBool::new(false)))
+    }
+
+    pub fn request(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub fn flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.0)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn is_requested(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
 
 #[cfg(target_os = "linux")]
 struct Connection {
@@ -26,6 +56,8 @@ struct EpollWorker {
     listeners: Vec<RegisteredListener>,
     connections: Slab<Connection>,
     servers: Vec<Server>,
+    shutdown: ShutdownHandle,
+    draining: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -36,7 +68,11 @@ struct RegisteredListener {
 
 #[cfg(target_os = "linux")]
 impl EpollWorker {
-    fn new(listeners: Vec<BoundListener>, servers: Vec<Server>) -> io::Result<Self> {
+    fn new(
+        listeners: Vec<BoundListener>,
+        servers: Vec<Server>,
+        shutdown: ShutdownHandle,
+    ) -> io::Result<Self> {
         let poll = Poll::new()?;
         let mut listeners: Vec<RegisteredListener> = listeners
             .into_iter()
@@ -56,6 +92,8 @@ impl EpollWorker {
             listeners,
             connections: Slab::new(),
             servers,
+            shutdown,
+            draining: false,
         })
     }
 
@@ -63,7 +101,15 @@ impl EpollWorker {
         let mut events = Events::with_capacity(max_events.max(1));
 
         loop {
-            self.poll.poll(&mut events, None)?;
+            if self.shutdown.is_requested() && !self.draining {
+                self.begin_shutdown()?;
+            }
+            if self.draining && self.connections.is_empty() {
+                return Ok(());
+            }
+
+            self.poll
+                .poll(&mut events, Some(Duration::from_millis(100)))?;
             let ready: Vec<(Token, bool, bool)> = events
                 .iter()
                 .map(|event| (event.token(), event.is_readable(), event.is_writable()))
@@ -71,13 +117,17 @@ impl EpollWorker {
 
             for (token, readable, writable) in ready {
                 if token.0 < self.listeners.len() {
-                    if readable {
+                    if readable && !self.draining {
                         self.accept_ready(token.0)?;
                     }
-                } else if readable {
-                    self.connection_ready(token.0 - self.listeners.len())?;
-                } else if writable {
-                    self.write_ready(token.0 - self.listeners.len())?;
+                } else {
+                    let connection_id = token.0 - self.listeners.len();
+                    if writable {
+                        self.write_ready(connection_id)?;
+                    }
+                    if readable && !self.draining {
+                        self.connection_ready(connection_id)?;
+                    }
                 }
             }
         }
@@ -182,8 +232,7 @@ impl EpollWorker {
         }
 
         if close_connection {
-            let mut connection = self.connections.remove(connection_id);
-            self.poll.registry().deregister(&mut connection.socket)?;
+            self.remove_connection(connection_id)?;
         }
 
         Ok(())
@@ -219,8 +268,7 @@ impl EpollWorker {
         }
 
         if finished {
-            let mut connection = self.connections.remove(connection_id);
-            self.poll.registry().deregister(&mut connection.socket)?;
+            self.remove_connection(connection_id)?;
         }
 
         Ok(())
@@ -239,6 +287,35 @@ impl EpollWorker {
             None => response_bytes(404, "not found"),
         }
     }
+
+    fn begin_shutdown(&mut self) -> io::Result<()> {
+        self.draining = true;
+        for listener in &mut self.listeners {
+            self.poll.registry().deregister(&mut listener.socket)?;
+        }
+
+        // Preserve only responses already queued for writing. There is no
+        // keep-alive yet, so all read-only connections can close immediately.
+        let close_ids: Vec<usize> = self
+            .connections
+            .iter()
+            .filter_map(|(id, connection)| {
+                (connection.write_offset >= connection.write_buffer.len()).then_some(id)
+            })
+            .collect();
+        for connection_id in close_ids {
+            self.remove_connection(connection_id)?;
+        }
+        Ok(())
+    }
+
+    fn remove_connection(&mut self, connection_id: usize) -> io::Result<()> {
+        if self.connections.contains(connection_id) {
+            let mut connection = self.connections.remove(connection_id);
+            self.poll.registry().deregister(&mut connection.socket)?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -247,7 +324,17 @@ pub fn run_epoll(
     servers: Vec<Server>,
     max_events: usize,
 ) -> io::Result<()> {
-    EpollWorker::new(listeners, servers)?.run(max_events)
+    run_epoll_with_shutdown(listeners, servers, max_events, ShutdownHandle::new())
+}
+
+#[cfg(target_os = "linux")]
+pub fn run_epoll_with_shutdown(
+    listeners: Vec<BoundListener>,
+    servers: Vec<Server>,
+    max_events: usize,
+    shutdown: ShutdownHandle,
+) -> io::Result<()> {
+    EpollWorker::new(listeners, servers, shutdown)?.run(max_events)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -260,4 +347,14 @@ pub fn run_epoll(
         io::ErrorKind::Unsupported,
         "epoll is only supported on Linux",
     ))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn run_epoll_with_shutdown(
+    listeners: Vec<BoundListener>,
+    servers: Vec<Server>,
+    max_events: usize,
+    _shutdown: ShutdownHandle,
+) -> io::Result<()> {
+    run_epoll(listeners, servers, max_events)
 }

@@ -1,16 +1,21 @@
 use proxy_common::{AsyncRuntimeConfig, Config};
 use std::io;
 
-use crate::{bind_worker_listeners, run_epoll, BoundListener};
+use crate::{bind_worker_listeners, run_epoll_with_shutdown, BoundListener, ShutdownHandle};
 
 pub fn start_worker(cpu_id: usize, config: &Config) -> io::Result<()> {
+    let shutdown = ShutdownHandle::new();
+    install_shutdown_signals(&shutdown)?;
     pin_to_cpu(cpu_id)?;
     let listeners = bind_worker_listeners(config)?;
 
     match &config.runtime {
-        AsyncRuntimeConfig::Epoll { max_events } => {
-            run_epoll(listeners, config.http.servers.clone(), *max_events)
-        }
+        AsyncRuntimeConfig::Epoll { max_events } => run_epoll_with_shutdown(
+            listeners,
+            config.http.servers.clone(),
+            *max_events,
+            shutdown,
+        ),
         AsyncRuntimeConfig::IoUring {
             sq_entries,
             cq_entries,
@@ -24,6 +29,16 @@ pub fn start_worker(cpu_id: usize, config: &Config) -> io::Result<()> {
             *buf_size,
         ),
     }
+}
+
+fn install_shutdown_signals(shutdown: &ShutdownHandle) -> io::Result<()> {
+    for signal in [
+        signal_hook::consts::signal::SIGINT,
+        signal_hook::consts::signal::SIGTERM,
+    ] {
+        signal_hook::flag::register(signal, shutdown.flag())?;
+    }
+    Ok(())
 }
 
 fn pin_to_cpu(cpu_id: usize) -> io::Result<()> {

@@ -5,9 +5,9 @@ intended shape is a supervising master process that starts CPU-pinned worker
 processes. Every worker owns an async event loop and can serve static files,
 return configured responses, or proxy requests upstream.
 
-The project is currently a skeleton: configuration parsing and the master/
-worker process outline exist, but it does not yet bind sockets or serve HTTP
-traffic.
+The project can now bind worker-owned sockets and, through the Linux `epoll`
+path, parse one HTTP/1.x request head and return configured fixed responses.
+Static files, proxying, keep-alive, and the `io_uring` runtime remain pending.
 
 ## Goals
 
@@ -23,9 +23,9 @@ traffic.
 ## Current project map
 
 - `crates/core`: shared configuration types and runtime configuration.
-- `run/master`: reads configuration, forks workers, pins them to CPUs, and
-  waits for worker exits.
-- `run/slave`: intended home for the worker implementation; currently a stub.
+- `run/master`: reads configuration, forks workers, and supervises worker exits.
+- `run/slave`: CPU-pins workers, creates listeners, and contains runtime,
+  connection, HTTP parsing, and routing code.
 - `rginx.toml`: the default configuration read by the executable.
 - `examples/config/`: minimal independent `epoll` and `io_uring` configuration
   examples.
@@ -36,7 +36,7 @@ traffic.
 
 - [ ] Define a runtime-neutral worker interface: bind/listen, accept, read,
   write, close, timers, wake-ups, and graceful shutdown.
-- [ ] Move worker startup and async dependencies out of `master` and into
+- [x] Move worker startup and async dependencies out of `master` and into
   `slave`; keep the master process runtime-agnostic.
 - [x] Add a `runtime` tagged union with `epoll` and `io_uring` variants.
 - [ ] Add an `auto` runtime mode once capability probing and fallback exist.
@@ -45,23 +45,27 @@ traffic.
 - [x] Use one listener per worker. Each child creates its own nonblocking socket
   after `fork`, with `SO_REUSEADDR` and `SO_REUSEPORT`, and binds every configured
   `listen` address. The kernel distributes new connections between workers.
-- [ ] Implement the worker-side listener factory: create/bind/listen sockets
+- [x] Implement the worker-side listener factory: create/bind/listen sockets
   after `fork`, set nonblocking mode, and return contextual errors for each
   address that cannot be opened.
-- [ ] Define an explicit listener-address type (IP address plus port) instead of
-  treating `listen` as a port-only field; bind to `0.0.0.0` by default until the
-  configuration supports an explicit address.
+- [x] Define an explicit `SocketAddr` listener address (IP address plus port)
+  instead of treating `listen` as a port-only field; the generated default is
+  `0.0.0.0:8089`.
 - [ ] Validate duplicate listen addresses once per config, while allowing every
   worker to bind the same address through `SO_REUSEPORT`.
 - [ ] Add a Linux integration test: start two workers on the same loopback port,
   verify both binds succeed, and verify all listeners close during shutdown.
 - [ ] Implement connection lifecycle and backpressure limits (maximum open
   connections, input/output buffer limits, and request timeouts).
-- [ ] Implement HTTP/1.1 parsing, keep-alive, request-size limits, and correct
-  response framing.
-- [ ] Implement the configured actions: `response`, safe static-file serving,
-  and streaming upstream proxying.
-- [ ] Add routing rules for exact/prefix matching and deterministic precedence.
+- [x] Implement incremental HTTP/1.x request-head parsing with malformed-head
+  and request-head-size errors.
+- [x] Implement fixed `response` actions with HTTP/1.1 framing and
+  `Connection: close`.
+- [ ] Implement keep-alive, request bodies, request-size limits, and complete
+  HTTP response framing semantics.
+- [ ] Implement safe static-file serving and streaming upstream proxying.
+- [x] Add exact/prefix routing with exact-match priority and longest-prefix
+  selection.
 - [ ] Add structured logs, per-worker metrics, and graceful drain/shutdown.
 - [ ] Restart crashed workers with a bounded backoff and a shutdown signal path.
 - [ ] Build integration tests that run the same HTTP test suite against both
@@ -69,13 +73,12 @@ traffic.
 
 ### `epoll` mode
 
-- [ ] Choose and document the implementation approach (`mio`, direct `epoll`,
-  or a Tokio runtime backed by `epoll`).
-- [ ] Register listening and client sockets with edge- or level-triggered
-  semantics; document the choice.
-- [ ] Correctly drain accepts and reads until `EAGAIN` when using edge-triggered
+- [x] Use `mio` as the Linux `epoll`-backed readiness implementation.
+- [x] Register listening and client sockets for readable events; reregister
+  client sockets for writable events only when a response is pending.
+- [x] Drain accepts and reads until `EAGAIN`/`WouldBlock` when using edge-triggered
   events.
-- [ ] Maintain per-connection read/write state and only subscribe to writable
+- [x] Maintain per-connection read/write state and only subscribe to writable
   events while output is pending.
 - [ ] Handle `EPOLLERR`, `EPOLLHUP`, `EPOLLRDHUP`, interrupted syscalls, and
   descriptor reuse safely.
@@ -152,8 +155,10 @@ traffic.
 
 ## Suggested delivery order
 
-1. Finish configuration validation and a single listener strategy.
-2. Implement the shared HTTP connection state machine and an `epoll` worker.
-3. Add full end-to-end tests and make `epoll` reliable under failure cases.
+1. Add Linux end-to-end tests for listener binding, a fixed response, partial
+   reads/writes, and controlled shutdown.
+2. Add graceful shutdown, connection limits/timeouts, and robust error-event
+   handling to the `epoll` worker.
+3. Implement HTTP bodies and keep-alive, then static-file serving and proxying.
 4. Introduce the runtime-neutral interface and implement `io_uring` behind it.
 5. Add capability probing, fallback, parity tests, and comparative benchmarks.

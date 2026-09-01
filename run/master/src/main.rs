@@ -1,5 +1,13 @@
 use proxy_common::{read_config, AsyncRuntimeConfig, Config};
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::Path,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_path = Path::new("rginx.toml");
@@ -41,7 +49,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    let shutdown_requested = Arc::new(AtomicBool::new(false));
+    for signal in [
+        signal_hook::consts::signal::SIGINT,
+        signal_hook::consts::signal::SIGTERM,
+    ] {
+        signal_hook::flag::register(signal, Arc::clone(&shutdown_requested))?;
+    }
+
     //  (Fork) Yönetimi
+    let mut workers = Vec::with_capacity(total_workers);
     for cpu_id in 0..total_workers {
         // config'i child process'e güvenli şekilde klonlayarak taşıyoruz
         let worker_config = config.clone();
@@ -49,6 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match unsafe { nix::unistd::fork() } {
             Ok(nix::unistd::ForkResult::Parent { child }) => {
                 println!("[Parent] Worker #{} (PID: {}) fork edildi.", cpu_id, child);
+                workers.push(child);
             }
             Ok(nix::unistd::ForkResult::Child) => {
                 // Okuduğumuz 'worker_config' ve 'cpu_id'yi işçi fonksiyona paslıyoruz.
@@ -59,16 +77,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Parent süreci hayatta tut ve ölen süreçleri izle (Supervision)
-    loop {
-        if let Ok(status) = nix::sys::wait::wait() {
-            println!(
-                "[Parent] Bir worker süreci kapandı veya çöktü: {:?}",
-                status
-            );
-            // İlerleyen aşamalarda buraya ölen worker'ı config ile yeniden kaldırma mantığı eklenebilir.
+    supervise_workers(workers, shutdown_requested)
+}
+
+fn supervise_workers(
+    workers: Vec<nix::unistd::Pid>,
+    shutdown_requested: Arc<AtomicBool>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut remaining = workers.len();
+    let mut stopping = false;
+
+    while remaining > 0 {
+        if shutdown_requested.load(Ordering::Acquire) && !stopping {
+            stopping = true;
+            println!("[Parent] Shutdown requested; draining workers...");
+            for worker in &workers {
+                if let Err(error) =
+                    nix::sys::signal::kill(*worker, nix::sys::signal::Signal::SIGTERM)
+                {
+                    if error != nix::errno::Errno::ESRCH {
+                        return Err(error.into());
+                    }
+                }
+            }
+        }
+
+        match nix::sys::wait::waitpid(None, Some(nix::sys::wait::WaitPidFlag::WNOHANG)) {
+            Ok(nix::sys::wait::WaitStatus::StillAlive) => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Ok(status) => {
+                remaining = remaining.saturating_sub(1);
+                println!("[Parent] Worker exited: {:?}", status);
+            }
+            Err(nix::errno::Errno::ECHILD) => break,
+            Err(error) => return Err(error.into()),
         }
     }
+
+    Ok(())
 }
 
 fn run_child_worker(cpu_id: usize, config: Config) {
