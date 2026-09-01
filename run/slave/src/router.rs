@@ -21,12 +21,24 @@ pub fn route<'a>(server: &'a Server, target: &str) -> Option<&'a Action> {
 }
 
 pub fn response_bytes(status: u16, body: &str) -> Vec<u8> {
+    response_bytes_with_body(status, "text/plain; charset=utf-8", body.as_bytes(), true)
+}
+
+pub fn response_bytes_with_body(
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+    include_body: bool,
+) -> Vec<u8> {
     let reason = reason_phrase(status);
-    format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+    let mut response = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
-    )
-    .into_bytes()
+    ).into_bytes();
+    if include_body {
+        response.extend_from_slice(body);
+    }
+    response
 }
 
 fn matches_exact(location: &Location, target: &str) -> bool {

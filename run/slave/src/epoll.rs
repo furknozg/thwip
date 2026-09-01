@@ -1,6 +1,6 @@
 use crate::BoundListener;
 #[cfg(target_os = "linux")]
-use crate::{parse_request_head, response_bytes, route, RequestHeadParse};
+use crate::{parse_request_head, response_bytes, route, static_response_bytes, RequestHeadParse};
 #[cfg(target_os = "linux")]
 use mio::{net::TcpListener, net::TcpStream, Events, Interest, Poll, Token};
 #[cfg(target_os = "linux")]
@@ -198,7 +198,7 @@ impl EpollWorker {
                                     connection.request_head_complete = true;
                                     println!("{} {}", request.method, request.target);
                                     server_index = connection.server_index;
-                                    request_target = Some(request.target);
+                                    request_target = Some((request.method, request.target));
                                     break;
                                 }
                                 Err(error) => {
@@ -219,8 +219,8 @@ impl EpollWorker {
             }
         }
 
-        if let Some(target) = request_target {
-            let response = self.response_for(server_index, &target);
+        if let Some((method, target)) = request_target {
+            let response = self.response_for(server_index, &method, &target);
             let connection = &mut self.connections[connection_id];
             connection.write_buffer = response;
             connection.write_offset = 0;
@@ -274,14 +274,17 @@ impl EpollWorker {
         Ok(())
     }
 
-    fn response_for(&self, server_index: usize, target: &str) -> Vec<u8> {
+    fn response_for(&self, server_index: usize, method: &str, target: &str) -> Vec<u8> {
         let Some(server) = self.servers.get(server_index) else {
             return response_bytes(500, "server configuration is unavailable");
         };
 
         match route(server, target) {
             Some(Action::Response { status, body }) => response_bytes(*status, body),
-            Some(Action::Static { .. } | Action::Proxy { .. }) => {
+            Some(Action::Static { directory }) => {
+                static_response_bytes(directory.as_ref(), method, target)
+            }
+            Some(Action::Proxy { .. }) => {
                 response_bytes(501, "configured action is not implemented")
             }
             None => response_bytes(404, "not found"),
