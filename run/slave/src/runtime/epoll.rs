@@ -1,7 +1,10 @@
 use super::{Runtime, ShutdownHandle, WorkerContext};
-use crate::BoundListener;
+use crate::BoundListenerGroup;
 #[cfg(unix)]
-use crate::{parse_request_head, response_bytes, route, static_response_bytes, RequestHeadParse};
+use crate::{
+    parse_request_head, response_bytes, route, select_server, static_response_bytes, RequestHead,
+    RequestHeadParse,
+};
 #[cfg(unix)]
 use mio::{net::TcpListener, net::TcpStream, Events, Interest, Poll, Token};
 #[cfg(unix)]
@@ -24,7 +27,7 @@ struct Connection {
     write_buffer: Vec<u8>,
     write_offset: usize,
     request_head_complete: bool,
-    server_index: usize,
+    listener_group: usize,
 }
 
 #[cfg(unix)]
@@ -40,23 +43,25 @@ struct EpollWorker {
 #[cfg(unix)]
 struct RegisteredListener {
     socket: TcpListener,
-    server_index: usize,
+    default_server: usize,
+    server_indices: Vec<usize>,
 }
 
 #[cfg(unix)]
 impl EpollWorker {
     fn new(context: WorkerContext) -> io::Result<Self> {
         let WorkerContext {
-            listeners,
+            listener_groups,
             servers,
             shutdown,
         } = context;
         let poll = Poll::new()?;
-        let mut listeners: Vec<RegisteredListener> = listeners
+        let mut listeners: Vec<RegisteredListener> = listener_groups
             .into_iter()
             .map(|listener| RegisteredListener {
                 socket: TcpListener::from_std(listener.socket),
-                server_index: listener.server_index,
+                default_server: listener.default_server,
+                server_indices: listener.server_indices,
             })
             .collect();
 
@@ -112,12 +117,11 @@ impl EpollWorker {
     }
 
     fn accept_ready(&mut self, listener_index: usize) -> io::Result<()> {
-        let server_index = self.listeners[listener_index].server_index;
         loop {
             match self.listeners[listener_index].socket.accept() {
                 Ok((stream, peer_address)) => {
                     println!("accepted connection from {peer_address}");
-                    self.register_connection(stream, server_index)?;
+                    self.register_connection(stream, listener_index)?;
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
                 Err(error) => {
@@ -128,14 +132,14 @@ impl EpollWorker {
         }
     }
 
-    fn register_connection(&mut self, stream: TcpStream, server_index: usize) -> io::Result<()> {
+    fn register_connection(&mut self, stream: TcpStream, listener_group: usize) -> io::Result<()> {
         let connection_id = self.connections.insert(Connection {
             socket: stream,
             read_buffer: Vec::with_capacity(8 * 1024),
             write_buffer: Vec::new(),
             write_offset: 0,
             request_head_complete: false,
-            server_index,
+            listener_group,
         });
         let token = Token(self.listeners.len() + connection_id);
 
@@ -152,8 +156,8 @@ impl EpollWorker {
         }
 
         let mut close_connection = false;
-        let mut request_target = None;
-        let mut server_index = 0;
+        let mut request: Option<RequestHead> = None;
+        let mut listener_group = 0;
         {
             use std::io::Read;
 
@@ -172,11 +176,14 @@ impl EpollWorker {
                         if !connection.request_head_complete {
                             match parse_request_head(&connection.read_buffer) {
                                 Ok(RequestHeadParse::Incomplete) => {}
-                                Ok(RequestHeadParse::Complete { request, .. }) => {
+                                Ok(RequestHeadParse::Complete {
+                                    request: request_head,
+                                    ..
+                                }) => {
                                     connection.request_head_complete = true;
-                                    println!("{} {}", request.method, request.target);
-                                    server_index = connection.server_index;
-                                    request_target = Some((request.method, request.target));
+                                    println!("{} {}", request_head.method, request_head.target);
+                                    listener_group = connection.listener_group;
+                                    request = Some(request_head);
                                     break;
                                 }
                                 Err(error) => {
@@ -197,8 +204,20 @@ impl EpollWorker {
             }
         }
 
-        if let Some((method, target)) = request_target {
-            let response = self.response_for(server_index, &method, &target);
+        if let Some(request) = request {
+            let Some(listener) = self.listeners.get(listener_group) else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "listener group is unavailable",
+                ));
+            };
+            let server_index = select_server(
+                &listener.server_indices,
+                listener.default_server,
+                &request,
+                &self.servers,
+            );
+            let response = self.response_for(server_index, &request.method, &request.target);
             let connection = &mut self.connections[connection_id];
             connection.write_buffer = response;
             connection.write_offset = 0;
@@ -314,22 +333,22 @@ impl Runtime for EpollRuntime {
 
 #[cfg(unix)]
 pub fn run_epoll(
-    listeners: Vec<BoundListener>,
+    listener_groups: Vec<BoundListenerGroup>,
     servers: Vec<Server>,
     max_events: usize,
 ) -> io::Result<()> {
-    run_epoll_with_shutdown(listeners, servers, max_events, ShutdownHandle::new())
+    run_epoll_with_shutdown(listener_groups, servers, max_events, ShutdownHandle::new())
 }
 
 #[cfg(unix)]
 pub fn run_epoll_with_shutdown(
-    listeners: Vec<BoundListener>,
+    listener_groups: Vec<BoundListenerGroup>,
     servers: Vec<Server>,
     max_events: usize,
     shutdown: ShutdownHandle,
 ) -> io::Result<()> {
     EpollRuntime { max_events }.run(WorkerContext {
-        listeners,
+        listener_groups,
         servers,
         shutdown,
     })
@@ -342,7 +361,7 @@ pub(crate) fn run_readiness(context: WorkerContext, max_events: usize) -> io::Re
 
 #[cfg(not(unix))]
 pub fn run_epoll(
-    _listeners: Vec<BoundListener>,
+    _listener_groups: Vec<BoundListenerGroup>,
     _servers: Vec<Server>,
     _max_events: usize,
 ) -> io::Result<()> {
@@ -354,10 +373,10 @@ pub fn run_epoll(
 
 #[cfg(not(unix))]
 pub fn run_epoll_with_shutdown(
-    listeners: Vec<BoundListener>,
+    listener_groups: Vec<BoundListenerGroup>,
     servers: Vec<Server>,
     max_events: usize,
     _shutdown: ShutdownHandle,
 ) -> io::Result<()> {
-    run_epoll(listeners, servers, max_events)
+    run_epoll(listener_groups, servers, max_events)
 }

@@ -7,9 +7,17 @@ use std::{
 
 pub const DEFAULT_BACKLOG: i32 = 1024;
 
-pub struct BoundListener {
+struct ListenerGroup {
+    address: SocketAddr,
+    default_server: usize,
+    server_indices: Vec<usize>,
+}
+
+pub struct BoundListenerGroup {
     pub socket: TcpListener,
-    pub server_index: usize,
+    pub address: SocketAddr,
+    pub default_server: usize,
+    pub server_indices: Vec<usize>,
 }
 
 pub fn bind_worker_listener(address: SocketAddr, backlog: i32) -> io::Result<TcpListener> {
@@ -50,24 +58,39 @@ pub fn bind_worker_listener(address: SocketAddr, backlog: i32) -> io::Result<Tcp
     Ok(socket.into())
 }
 
-pub fn bind_worker_listeners(config: &Config) -> io::Result<Vec<BoundListener>> {
-    config
-        .http
-        .servers
-        .iter()
-        .enumerate()
-        .map(|(server_index, server)| {
-            bind_worker_listener(server.listen, DEFAULT_BACKLOG)
-                .map(|socket| BoundListener {
-                    socket,
-                    server_index,
-                })
-                .map_err(|error| {
-                    io::Error::new(
-                        error.kind(),
-                        format!("failed to bind listener at {}: {error}", server.listen),
-                    )
-                })
+pub fn bind_worker_listeners(config: &Config) -> io::Result<Vec<BoundListenerGroup>> {
+    let mut groups = Vec::<ListenerGroup>::new();
+
+    for (server_index, server) in config.http.servers.iter().enumerate() {
+        let group_index = match groups
+            .iter()
+            .position(|group| group.address == server.listen)
+        {
+            Some(index) => index,
+            None => {
+                groups.push(ListenerGroup {
+                    address: server.listen,
+                    default_server: server_index,
+                    server_indices: Vec::new(),
+                });
+                groups.len() - 1
+            }
+        };
+
+        groups[group_index].server_indices.push(server_index);
+    }
+
+    groups
+        .into_iter()
+        .map(|group| -> io::Result<BoundListenerGroup> {
+            let socket = bind_worker_listener(group.address, DEFAULT_BACKLOG)?;
+
+            Ok(BoundListenerGroup {
+                socket,
+                address: group.address,
+                default_server: group.default_server,
+                server_indices: group.server_indices,
+            })
         })
         .collect()
 }

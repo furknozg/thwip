@@ -10,9 +10,9 @@ pub fn start_worker(cpu_id: usize, config: &Config) -> io::Result<()> {
     let shutdown = ShutdownHandle::new();
     install_shutdown_signals(&shutdown)?;
     pin_to_cpu(cpu_id)?;
-    let listeners = bind_worker_listeners(config)?;
+    let listener_groups = bind_worker_listeners(config)?;
     let context = WorkerContext {
-        listeners,
+        listener_groups,
         servers: config.http.servers.clone(),
         shutdown,
     };
@@ -67,7 +67,10 @@ fn pin_to_cpu(cpu_id: usize) -> io::Result<()> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn pin_to_cpu(_cpu_id: usize) -> io::Result<()> {
-    // kqueue platforms run without explicit CPU pinning
+fn pin_to_cpu(cpu_id: usize) -> io::Result<()> {
+    eprintln!(
+        "[Worker {}] CPU affinity is unavailable on this platform; using the OS scheduler.",
+        cpu_id
+    );
     Ok(())
 }

@@ -1,22 +1,24 @@
 # thwip
 
-`thwip` is an experimental Linux HTTP server and reverse-proxy project. Its
+`thwip` is an experimental Unix HTTP server and reverse-proxy project. Its
 intended shape is a supervising master process that starts CPU-pinned worker
 processes. Every worker owns an async event loop and can serve static files,
 return configured responses, or proxy requests upstream.
 
-The project can now bind worker-owned sockets and, through the Linux `epoll`
-path, parse one HTTP/1.x request head and return configured fixed responses.
-Static files, proxying, keep-alive, and the `io_uring` runtime remain pending.
+The project can bind worker-owned sockets and, through the `epoll`/`kqueue`
+readiness path, parse one HTTP/1.x request head, select a virtual host from
+its `Host` header, return configured fixed responses, and serve small static
+files. Proxying, keep-alive, and the `io_uring` runtime remain pending.
 
 ## Goals
 
 - One worker process per configured CPU slot, supervised by a master process.
-- A shared HTTP/proxy implementation with interchangeable Linux I/O backends.
-- Two runtime modes:
+- A shared HTTP/proxy implementation with interchangeable Unix I/O backends.
+- Runtime modes:
   - `epoll`: a broadly compatible readiness-based Linux runtime.
   - `io_uring`: a completion-based Linux runtime for kernels and deployments
     that support the required operations.
+  - `kqueue`: a readiness-based macOS/BSD runtime.
 - Explicit configuration, predictable fallback behavior, and benchmarkable
   performance.
 
@@ -27,18 +29,20 @@ Static files, proxying, keep-alive, and the `io_uring` runtime remain pending.
 - `run/slave`: CPU-pins workers, creates listeners, and contains runtime,
   connection, HTTP parsing, and routing code.
 - `rginx.toml`: the default configuration read by the executable.
-- `examples/config/`: minimal independent `epoll` and `io_uring` configuration
-  examples.
+- `examples/config/`: minimal independent runtime configuration examples.
 
 ## Runtime roadmap
 
 ### Shared work (required by both runtimes)
 
-- [ ] Define a runtime-neutral worker interface: bind/listen, accept, read,
-  write, close, timers, wake-ups, and graceful shutdown.
+- [x] Define a runtime-neutral `Runtime` interface with a `WorkerContext` and
+  shared `ShutdownHandle`.
+- [ ] Extend the shared runtime interface with timers, wake-ups, and runtime
+  metrics.
 - [x] Move worker startup and async dependencies out of `master` and into
   `slave`; keep the master process runtime-agnostic.
-- [x] Add a `runtime` tagged union with `epoll` and `io_uring` variants.
+- [x] Add a `runtime` tagged union with `epoll`, `kqueue`, and `io_uring`
+  variants.
 - [ ] Add an `auto` runtime mode once capability probing and fallback exist.
 - [ ] Validate runtime-specific configuration at load time and reject invalid
   queue/buffer sizes with actionable errors.
@@ -51,8 +55,9 @@ Static files, proxying, keep-alive, and the `io_uring` runtime remain pending.
 - [x] Define an explicit `SocketAddr` listener address (IP address plus port)
   instead of treating `listen` as a port-only field; the generated default is
   `0.0.0.0:8089`.
-- [x] Validate duplicate listen addresses once per config, while allowing every
-  worker to bind the same address through `SO_REUSEPORT`.
+- [x] Group duplicate listen addresses into one listener per worker. Servers
+  sharing an address form a listener group; the first is its default server and
+  an exact, case-insensitive `Host` match selects another configured server.
 - [ ] Add a Linux integration test: start two workers on the same loopback port,
   verify both binds succeed, and verify all listeners close during shutdown.
 - [ ] Implement connection lifecycle and backpressure limits (maximum open
@@ -63,11 +68,18 @@ Static files, proxying, keep-alive, and the `io_uring` runtime remain pending.
   `Connection: close`.
 - [ ] Implement keep-alive, request bodies, request-size limits, and complete
   HTTP response framing semantics.
-- [ ] Implement safe static-file serving and streaming upstream proxying.
+- [x] Implement small, safe static-file serving: `GET`/`HEAD`, index files,
+  query stripping, traversal protection, root containment, MIME types, and an
+  in-memory file-size limit.
+- [ ] Stream large static files without blocking the event loop; add range,
+  cache, and full MIME support.
+- [ ] Implement streaming upstream proxying.
 - [x] Add exact/prefix routing with exact-match priority and longest-prefix
   selection.
-- [ ] Add structured logs, per-worker metrics, and graceful drain/shutdown.
-- [ ] Restart crashed workers with a bounded backoff and a shutdown signal path.
+- [x] Add SIGINT/SIGTERM master-to-worker shutdown and response draining.
+- [ ] Add structured logs, per-worker metrics, drain deadlines, and shutdown
+  reporting.
+- [ ] Restart crashed workers with bounded backoff.
 - [ ] Build integration tests that run the same HTTP test suite against both
   runtime modes.
 
@@ -85,6 +97,14 @@ Static files, proxying, keep-alive, and the `io_uring` runtime remain pending.
 - [ ] Add an `eventfd`/pipe wake-up mechanism for control messages and shutdown.
 - [ ] Test slow clients, partial writes, half-closed connections, and file
   descriptor exhaustion.
+
+### `kqueue` mode
+
+- [x] Reuse the readiness worker through `mio` on macOS/BSD.
+- [ ] Test multi-worker `SO_REUSEPORT` behavior and graceful shutdown on macOS
+  and at least one BSD target.
+- [x] Treat CPU affinity as optional on macOS/BSD; workers log that the OS
+  scheduler is being used instead of failing startup.
 
 ### `io_uring` mode
 
@@ -122,9 +142,9 @@ Static files, proxying, keep-alive, and the `io_uring` runtime remain pending.
 ## Configuration TODOs
 
 - [x] Use `rginx.toml` consistently as the executable's default configuration.
-- [ ] Reject duplicate `listen` endpoints unless the selected listener model
-  explicitly supports them. The sample currently declares the same port twice.
-- [ ] Add an explicit schema/version and examples for all runtime modes.
+- [x] Group duplicate `listen` endpoints for virtual hosts; unknown or missing
+  `Host` values use the first server configured for that endpoint.
+- [ ] Add an explicit schema/version; examples exist for all runtime modes.
 - [ ] Validate server names, route paths, response status codes, directories,
   upstream URLs, and worker count.
 - [ ] Add timeouts, header/body limits, logging, TLS, and upstream pool settings.
@@ -155,10 +175,11 @@ Static files, proxying, keep-alive, and the `io_uring` runtime remain pending.
 
 ## Suggested delivery order
 
-1. Add Linux end-to-end tests for listener binding, a fixed response, partial
-   reads/writes, and controlled shutdown.
-2. Add graceful shutdown, connection limits/timeouts, and robust error-event
+1. Add Linux and macOS/BSD end-to-end tests for listener binding, a fixed
+   response, partial reads/writes, and controlled shutdown.
+2. Add connection limits/timeouts, drain deadlines, and robust error-event
    handling to the `epoll` worker.
-3. Implement HTTP bodies and keep-alive, then static-file serving and proxying.
-4. Introduce the runtime-neutral interface and implement `io_uring` behind it.
+3. Add end-to-end virtual-host tests, then implement HTTP bodies and keep-alive;
+   stream large static files afterward.
+4. Implement upstream proxying, then `io_uring` behind the shared interface.
 5. Add capability probing, fallback, parity tests, and comparative benchmarks.

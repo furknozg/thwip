@@ -1,3 +1,4 @@
+use crate::RequestHead;
 use proxy_common::{Action, Location, PathMatcher, Server};
 
 pub fn route<'a>(server: &'a Server, target: &str) -> Option<&'a Action> {
@@ -18,6 +19,46 @@ pub fn route<'a>(server: &'a Server, target: &str) -> Option<&'a Action> {
                 .max_by_key(|(length, _)| *length)
                 .map(|(_, action)| action)
         })
+}
+
+/// Chooses a virtual host within one already-bound listener group. A missing
+/// or unknown Host header intentionally falls back to that listener's first
+/// configured server.
+pub fn select_server(
+    server_indices: &[usize],
+    default_server: usize,
+    request: &RequestHead,
+    servers: &[Server],
+) -> usize {
+    let host = request
+        .headers
+        .iter()
+        .find(|header| header.name == "host")
+        .map(|header| hostname(&header.value));
+
+    host.and_then(|host| {
+        server_indices.iter().copied().find(|&server_index| {
+            servers.get(server_index).is_some_and(|server| {
+                server
+                    .server_name
+                    .as_deref()
+                    .is_some_and(|server_name| server_name.eq_ignore_ascii_case(host))
+            })
+        })
+    })
+    .unwrap_or(default_server)
+}
+
+fn hostname(host: &str) -> &str {
+    let host = host.trim();
+
+    if let Some(bracketed) = host.strip_prefix('[') {
+        return bracketed
+            .split_once(']')
+            .map_or(bracketed, |(address, _)| address);
+    }
+
+    host.split_once(':').map_or(host, |(name, _)| name)
 }
 
 pub fn response_bytes(status: u16, body: &str) -> Vec<u8> {
@@ -119,5 +160,38 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(response.contains("Content-Length: 2\r\n"));
         assert!(response.ends_with("\r\n\r\nOK"));
+    }
+
+    #[test]
+    fn virtual_host_selection_matches_host_ignoring_case_and_port() {
+        let mut default = server();
+        default.server_name = Some("default.test".into());
+        let mut named = server();
+        named.server_name = Some("api.example.test".into());
+        let servers = vec![default, named];
+        let request = RequestHead {
+            method: "GET".into(),
+            target: "/".into(),
+            version: crate::HttpVersion::Http11,
+            headers: vec![crate::Header {
+                name: "host".into(),
+                value: "API.EXAMPLE.TEST:8080".into(),
+            }],
+        };
+
+        assert_eq!(select_server(&[0, 1], 0, &request, &servers), 1);
+    }
+
+    #[test]
+    fn virtual_host_selection_falls_back_to_the_group_default() {
+        let servers = vec![server(), server()];
+        let request = RequestHead {
+            method: "GET".into(),
+            target: "/".into(),
+            version: crate::HttpVersion::Http11,
+            headers: Vec::new(),
+        };
+
+        assert_eq!(select_server(&[0, 1], 0, &request, &servers), 0);
     }
 }

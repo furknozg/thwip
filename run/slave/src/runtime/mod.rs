@@ -1,4 +1,4 @@
-use crate::BoundListener;
+use crate::BoundListenerGroup;
 use proxy_common::Server;
 use std::{
     io,
@@ -27,7 +27,7 @@ impl ShutdownHandle {
 }
 
 pub struct WorkerContext {
-    pub listeners: Vec<BoundListener>,
+    pub listener_groups: Vec<BoundListenerGroup>,
     pub servers: Vec<Server>,
     pub shutdown: ShutdownHandle,
 }
