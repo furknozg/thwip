@@ -38,16 +38,13 @@ impl Drop for TestWorker {
     }
 }
 
-fn server(name: &str, body: &str, listen: SocketAddr) -> Server {
+fn server_with_action(name: &str, action: Action, listen: SocketAddr) -> Server {
     Server {
         server_name: Some(name.into()),
         listen,
         locations: vec![Location {
             matcher: PathMatcher::Prefix { path: "/".into() },
-            action: Action::Response {
-                status: 200,
-                body: body.into(),
-            },
+            action,
         }],
     }
 }
@@ -83,6 +80,22 @@ fn run_readiness(context: WorkerContext) -> std::io::Result<()> {
 }
 
 fn start_worker(hosts: &[(&str, String)], limits: WorkerLimits) -> TestWorker {
+    let actions: Vec<(&str, Action)> = hosts
+        .iter()
+        .map(|(name, body)| {
+            (
+                *name,
+                Action::Response {
+                    status: 200,
+                    body: body.clone(),
+                },
+            )
+        })
+        .collect();
+    start_worker_with_actions(&actions, limits)
+}
+
+fn start_worker_with_actions(hosts: &[(&str, Action)], limits: WorkerLimits) -> TestWorker {
     let requested_address: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let socket = TcpListener::bind(requested_address).expect("bind listener");
     socket
@@ -92,7 +105,7 @@ fn start_worker(hosts: &[(&str, String)], limits: WorkerLimits) -> TestWorker {
     let shutdown = ShutdownHandle::new();
     let servers: Vec<Server> = hosts
         .iter()
-        .map(|(name, body)| server(name, body, address))
+        .map(|(name, action)| server_with_action(name, action.clone(), address))
         .collect();
     let context = WorkerContext {
         listener_groups: vec![BoundListenerGroup {
@@ -112,6 +125,82 @@ fn start_worker(hosts: &[(&str, String)], limits: WorkerLimits) -> TestWorker {
         shutdown,
         thread: Some(worker),
     }
+}
+
+#[test]
+fn streams_request_body_to_upstream_and_response_back_to_client() {
+    let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream_address = upstream.local_addr().unwrap();
+    let (request_sender, request_receiver) = std::sync::mpsc::channel();
+    let upstream_thread = thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        while !request.ends_with(b"ping") {
+            let read = stream.read(&mut buffer).unwrap();
+            assert_ne!(read, 0);
+            request.extend_from_slice(&buffer[..read]);
+        }
+        request_sender.send(request).unwrap();
+
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nstre")
+            .unwrap();
+        thread::sleep(Duration::from_millis(20));
+        stream.write_all(b"amed").unwrap();
+    });
+    let worker = start_worker_with_actions(
+        &[(
+            "proxy.test",
+            Action::Proxy {
+                upstream: format!("http://{upstream_address}"),
+            },
+        )],
+        WorkerLimits::default(),
+    );
+
+    let mut client = TcpStream::connect(worker.address).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    client
+        .write_all(b"POST /upload HTTP/1.1\r\nHost: proxy.test\r\nContent-Length: 4\r\n\r\nping")
+        .unwrap();
+    let mut response = Vec::new();
+    client.read_to_end(&mut response).unwrap();
+
+    assert!(response.ends_with(b"streamed"));
+    let forwarded = String::from_utf8(request_receiver.recv().unwrap()).unwrap();
+    assert!(forwarded.starts_with("POST /upload HTTP/1.1\r\n"));
+    assert!(forwarded.contains(&format!("Host: {upstream_address}\r\n")));
+    assert!(forwarded.contains("Connection: close\r\n"));
+    assert!(forwarded.ends_with("\r\n\r\nping"));
+    upstream_thread.join().unwrap();
+}
+
+#[test]
+fn returns_bad_gateway_when_upstream_connect_fails() {
+    let unavailable = TcpListener::bind("127.0.0.1:0").unwrap();
+    let unavailable_address = unavailable.local_addr().unwrap();
+    drop(unavailable);
+    let worker = start_worker_with_actions(
+        &[(
+            "proxy.test",
+            Action::Proxy {
+                upstream: format!("http://{unavailable_address}"),
+            },
+        )],
+        WorkerLimits::default(),
+    );
+
+    let response = request(worker.address, "proxy.test");
+    assert!(
+        response.starts_with("HTTP/1.1 502 Bad Gateway\r\n"),
+        "unexpected proxy failure response: {response:?}"
+    );
 }
 
 #[test]

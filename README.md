@@ -8,8 +8,9 @@ return configured responses, or proxy requests upstream.
 The project can bind worker-owned sockets and, through the `epoll`/`kqueue`
 readiness path, parse framed HTTP/1.x requests, select a virtual host from its
 `Host` header, return configured fixed responses, and serve small static files.
-Proxying, keep-alive, chunked request bodies, and the `io_uring` runtime remain
-pending.
+The initial HTTP upstream proxy streams through bounded buffers with
+backpressure. Keep-alive, chunked request bodies, upstream pooling/TLS, and the
+`io_uring` runtime remain pending.
 
 ## Goals
 
@@ -31,6 +32,8 @@ pending.
   connection, HTTP parsing, and routing code.
 - `rginx.toml`: the default configuration read by the executable.
 - `examples/config/`: minimal independent runtime configuration examples.
+- `.github/workflows/ci.yml`: formatting, Clippy, and workspace tests on Linux,
+  including the real epoll-backed readiness path.
 
 ## Runtime roadmap
 
@@ -38,8 +41,9 @@ pending.
 
 - [x] Define a runtime-neutral `Runtime` interface with a `WorkerContext` and
   shared `ShutdownHandle`.
-- [ ] Extend the shared runtime interface with timers, wake-ups, and runtime
-  metrics.
+- [x] Add shared idle/drain timers and an immediate runtime wake-up path.
+- [ ] Extend the shared runtime interface with general-purpose timers, control
+  messages, and runtime metrics.
 - [x] Move worker startup and async dependencies out of `master` and into
   `slave`; keep the master process runtime-agnostic.
 - [x] Add a `runtime` tagged union with `epoll`, `kqueue`, and `io_uring`
@@ -81,7 +85,12 @@ pending.
   in-memory file-size limit.
 - [ ] Stream large static files without blocking the event loop; add range,
   cache, and full MIME support.
-- [ ] Implement streaming upstream proxying.
+- [x] Implement bounded nonblocking HTTP upstream proxying: forward validated
+  request bodies, strip hop-by-hop headers, rewrite `Host`, stream responses
+  with client backpressure, and return `502` on upstream failure.
+- [ ] Move DNS resolution off the worker loop; add upstream-specific
+  connect/read/write timeouts, response framing validation, pooling, retries,
+  health checks, and HTTPS upstreams.
 - [x] Add exact/prefix routing with exact-match priority and longest-prefix
   selection.
 - [x] Add SIGINT/SIGTERM master-to-worker shutdown and response draining.
@@ -89,7 +98,8 @@ pending.
   reporting.
 - [ ] Restart crashed workers with bounded backoff.
 - [ ] Build integration tests that run the same HTTP test suite against both
-  runtime modes.
+  runtime modes on their native platforms. Linux epoll runs in CI; macOS/BSD
+  kqueue coverage is currently local.
 
 ### `epoll` mode
 
@@ -159,7 +169,9 @@ pending.
 - [ ] Add an explicit schema/version; examples exist for all runtime modes.
 - [ ] Validate server names, route paths, response status codes, directories,
   upstream URLs, and worker count.
-- [ ] Add timeouts, header/body limits, logging, TLS, and upstream pool settings.
+- [x] Add configurable connection limits, read/write buffer limits, idle
+  timeout, and graceful-drain timeout.
+- [ ] Add separate header/body limits, logging, TLS, and upstream pool settings.
 
 ## README/documentation TODOs
 
@@ -187,11 +199,12 @@ pending.
 
 ## Suggested delivery order
 
-1. Add Linux and macOS/BSD end-to-end tests for listener binding, a fixed
-   response, partial reads/writes, and controlled shutdown.
-2. Add connection limits/timeouts, drain deadlines, and robust error-event
-   handling to the `epoll` worker.
-3. Add end-to-end virtual-host tests, then implement HTTP bodies and keep-alive;
-   stream large static files afterward.
-4. Implement upstream proxying, then `io_uring` behind the shared interface.
-5. Add capability probing, fallback, parity tests, and comparative benchmarks.
+1. Move DNS off the readiness loop and add explicit upstream connect/read/write
+   timeouts plus response-framing validation.
+2. Expose validated request bodies to other actions, then add keep-alive and chunked
+   request decoding.
+3. Add multi-worker `SO_REUSEPORT` and shutdown tests on Linux and macOS/BSD,
+   plus overload and file-descriptor-exhaustion coverage.
+4. Stream large static files and add range/cache support.
+5. Implement `io_uring`, capability probing, automatic fallback, parity tests,
+   and comparative benchmarks.

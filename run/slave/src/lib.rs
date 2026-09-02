@@ -12,6 +12,8 @@ pub use http::{
 mod router;
 pub use router::{response_bytes, response_bytes_with_body, route, select_server};
 
+mod proxy;
+
 mod static_files;
 pub use static_files::{parse_request_target, serve_static, static_response_bytes, StaticError};
 

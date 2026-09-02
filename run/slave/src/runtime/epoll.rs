@@ -1,4 +1,6 @@
 use super::{Runtime, ShutdownHandle, WorkerContext, WorkerLimits};
+#[cfg(unix)]
+use crate::proxy::Upstream;
 use crate::BoundListenerGroup;
 #[cfg(unix)]
 use crate::{
@@ -29,11 +31,13 @@ const CONTROL_TOKEN: Token = Token(usize::MAX);
 #[cfg(unix)]
 const CONNECTION_TAG: usize = 1 << (usize::BITS - 1);
 #[cfg(unix)]
+const UPSTREAM_TAG: usize = 1 << (usize::BITS - 2);
+#[cfg(unix)]
 const SLOT_BITS: u32 = usize::BITS / 2;
 #[cfg(unix)]
 const SLOT_MASK: usize = (1usize << SLOT_BITS) - 1;
 #[cfg(unix)]
-const GENERATION_BITS: u32 = usize::BITS - SLOT_BITS - 1;
+const GENERATION_BITS: u32 = usize::BITS - SLOT_BITS - 2;
 #[cfg(unix)]
 const GENERATION_MASK: usize = (1usize << GENERATION_BITS) - 1;
 
@@ -51,6 +55,15 @@ struct Connection {
     listener_group: usize,
     last_progress: Instant,
     generation: usize,
+    proxy: Option<ProxyState>,
+}
+
+#[cfg(unix)]
+struct ProxyState {
+    upstream: TcpStream,
+    request_buffer: Vec<u8>,
+    request_offset: usize,
+    upstream_eof: bool,
 }
 
 #[cfg(unix)]
@@ -61,15 +74,26 @@ struct ConnectionId {
 }
 
 #[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SocketRole {
+    Client,
+    Upstream,
+}
+
+#[cfg(unix)]
 impl ConnectionId {
-    fn token(self) -> io::Result<Token> {
+    fn token(self, role: SocketRole) -> io::Result<Token> {
         if self.slot > SLOT_MASK || self.generation == 0 || self.generation > GENERATION_MASK {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "connection identifier cannot be encoded as a mio token",
             ));
         }
-        let token = Token(CONNECTION_TAG | (self.generation << SLOT_BITS) | self.slot);
+        let role_tag = match role {
+            SocketRole::Client => 0,
+            SocketRole::Upstream => UPSTREAM_TAG,
+        };
+        let token = Token(CONNECTION_TAG | role_tag | (self.generation << SLOT_BITS) | self.slot);
         if token == CONTROL_TOKEN {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -79,21 +103,30 @@ impl ConnectionId {
         Ok(token)
     }
 
-    fn from_token(token: Token) -> Option<Self> {
+    fn from_token(token: Token) -> Option<(Self, SocketRole)> {
         if token == CONTROL_TOKEN || token.0 & CONNECTION_TAG == 0 {
             return None;
         }
         let generation = (token.0 >> SLOT_BITS) & GENERATION_MASK;
-        (generation != 0).then_some(Self {
-            slot: token.0 & SLOT_MASK,
-            generation,
-        })
+        let role = if token.0 & UPSTREAM_TAG == 0 {
+            SocketRole::Client
+        } else {
+            SocketRole::Upstream
+        };
+        (generation != 0).then_some((
+            Self {
+                slot: token.0 & SLOT_MASK,
+                generation,
+            },
+            role,
+        ))
     }
 }
 
 #[cfg(unix)]
 struct PendingRequest {
     head: RequestHead,
+    body_start: usize,
     body_end: usize,
 }
 
@@ -104,6 +137,8 @@ struct EpollWorker {
     connections: Slab<Connection>,
     generations: Vec<usize>,
     pending_writes: HashSet<ConnectionId>,
+    pending_upstream_writes: HashSet<ConnectionId>,
+    pending_upstream_reads: HashSet<ConnectionId>,
     servers: Vec<Server>,
     shutdown: ShutdownHandle,
     limits: WorkerLimits,
@@ -181,6 +216,8 @@ impl EpollWorker {
             connections: Slab::new(),
             generations: Vec::new(),
             pending_writes: HashSet::new(),
+            pending_upstream_writes: HashSet::new(),
+            pending_upstream_reads: HashSet::new(),
             servers,
             shutdown,
             limits,
@@ -211,8 +248,23 @@ impl EpollWorker {
                     self.write_ready(connection_id)?;
                 }
             }
+            let upstream_writes: Vec<ConnectionId> = self.pending_upstream_writes.drain().collect();
+            for connection_id in upstream_writes {
+                if self.is_current(connection_id) {
+                    self.write_upstream_request(connection_id)?;
+                }
+            }
+            let upstream_reads: Vec<ConnectionId> = self.pending_upstream_reads.drain().collect();
+            for connection_id in upstream_reads {
+                if self.is_current(connection_id) {
+                    self.read_upstream_response(connection_id)?;
+                }
+            }
 
-            let timeout = if self.pending_writes.is_empty() {
+            let timeout = if self.pending_writes.is_empty()
+                && self.pending_upstream_writes.is_empty()
+                && self.pending_upstream_reads.is_empty()
+            {
                 Some(Duration::from_millis(100))
             } else {
                 Some(Duration::ZERO)
@@ -244,27 +296,58 @@ impl EpollWorker {
                         self.accept_ready(token.0)?;
                     }
                 } else {
-                    let Some(connection_id) = ConnectionId::from_token(token) else {
+                    let Some((connection_id, role)) = ConnectionId::from_token(token) else {
                         continue;
                     };
                     if !self.is_current(connection_id) {
                         continue;
                     }
-                    if error || write_closed {
-                        self.log_socket_error(connection_id, error);
-                        self.remove_connection(connection_id)?;
-                        continue;
-                    }
-                    if writable {
-                        self.write_ready(connection_id)?;
-                    }
-                    if readable && !self.draining {
-                        self.connection_ready(connection_id)?;
-                    }
-                    if read_closed && self.is_current(connection_id) {
-                        let connection = &self.connections[connection_id.slot];
-                        if connection.write_offset == connection.write_buffer.len() {
-                            self.remove_connection(connection_id)?;
+                    match role {
+                        SocketRole::Client => {
+                            if error {
+                                self.log_socket_error(connection_id, error);
+                                self.remove_connection(connection_id)?;
+                                continue;
+                            }
+                            if writable {
+                                self.write_ready(connection_id)?;
+                            }
+                            if readable && !self.draining {
+                                self.connection_ready(connection_id)?;
+                            }
+                            if read_closed && self.is_current(connection_id) {
+                                let connection = &self.connections[connection_id.slot];
+                                if connection.write_offset == connection.write_buffer.len() {
+                                    self.remove_connection(connection_id)?;
+                                }
+                            }
+                            if write_closed && self.is_current(connection_id) {
+                                let connection = &self.connections[connection_id.slot];
+                                if connection.write_offset == connection.write_buffer.len() {
+                                    self.remove_connection(connection_id)?;
+                                }
+                            }
+                        }
+                        SocketRole::Upstream => {
+                            if self.connections[connection_id.slot].proxy.is_none() {
+                                continue;
+                            }
+                            if error {
+                                self.fail_proxy(connection_id, "upstream connection failed")?;
+                                continue;
+                            }
+                            if writable {
+                                self.write_upstream_request(connection_id)?;
+                            }
+                            if readable && self.is_current(connection_id) {
+                                self.read_upstream_response(connection_id)?;
+                            }
+                            if (read_closed || write_closed) && self.is_current(connection_id) {
+                                // A close notification can accompany unread
+                                // response bytes. Schedule another recv and
+                                // only treat recv(0) as the final EOF.
+                                self.pending_upstream_reads.insert(connection_id);
+                            }
                         }
                     }
                 }
@@ -316,8 +399,9 @@ impl EpollWorker {
             listener_group,
             last_progress: Instant::now(),
             generation,
+            proxy: None,
         });
-        let token = connection_id.token()?;
+        let token = connection_id.token(SocketRole::Client)?;
 
         if let Err(error) = self.poll.registry().register(
             &mut self.connections[slot].socket,
@@ -335,10 +419,14 @@ impl EpollWorker {
         if !self.is_current(connection_id) {
             return Ok(());
         }
+        if self.connections[connection_id.slot].proxy.is_some() {
+            return self.client_during_proxy_ready(connection_id);
+        }
 
         let mut close_connection = false;
         let mut error_response = None;
         let mut request: Option<RequestHead> = None;
+        let mut request_body = Vec::new();
         let mut listener_group = 0;
         {
             use std::io::Read;
@@ -379,6 +467,7 @@ impl EpollWorker {
                                         }
                                         connection.pending_request = Some(PendingRequest {
                                             head: request_head,
+                                            body_start: consumed,
                                             body_end,
                                         });
                                     }
@@ -411,6 +500,9 @@ impl EpollWorker {
                             let pending = connection.pending_request.take().unwrap();
                             println!("{} {}", pending.head.method, pending.head.target);
                             listener_group = connection.listener_group;
+                            request_body = connection.read_buffer
+                                [pending.body_start..pending.body_end]
+                                .to_vec();
                             request = Some(pending.head);
                             break;
                         }
@@ -441,14 +533,272 @@ impl EpollWorker {
                 &request,
                 &self.servers,
             );
-            let response = self.response_for(server_index, &request.method, &request.target);
-            self.queue_response(connection_id, response)?;
+            let Some(server) = self.servers.get(server_index) else {
+                self.queue_response(
+                    connection_id,
+                    response_bytes(500, "server configuration is unavailable"),
+                )?;
+                return Ok(());
+            };
+            let proxy_upstream = match route(server, &request.target) {
+                Some(Action::Proxy { upstream }) => Some(upstream.clone()),
+                _ => None,
+            };
+            match proxy_upstream {
+                Some(upstream) => {
+                    if let Err(error) =
+                        self.start_proxy(connection_id, &upstream, &request, &request_body)
+                    {
+                        eprintln!("failed to start upstream proxy: {error}");
+                        self.queue_response(
+                            connection_id,
+                            response_bytes(502, "upstream connection failed"),
+                        )?;
+                    }
+                }
+                None => {
+                    let response =
+                        self.response_for(server_index, &request.method, &request.target);
+                    self.queue_response(connection_id, response)?;
+                }
+            }
         }
 
         if close_connection {
             self.remove_connection(connection_id)?;
         }
 
+        Ok(())
+    }
+
+    fn client_during_proxy_ready(&mut self, connection_id: ConnectionId) -> io::Result<()> {
+        use std::io::Read;
+
+        let mut close = false;
+        let connection = &mut self.connections[connection_id.slot];
+        let mut buffer = [0_u8; 8 * 1024];
+        for _ in 0..MAX_READS_PER_EVENT {
+            match connection.socket.read(&mut buffer) {
+                Ok(0) => {
+                    close = true;
+                    break;
+                }
+                Ok(_) => connection.last_progress = Instant::now(),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    eprintln!("proxy client read failed: {error}");
+                    close = true;
+                    break;
+                }
+            }
+        }
+        if close {
+            self.remove_connection(connection_id)?;
+        }
+        Ok(())
+    }
+
+    fn start_proxy(
+        &mut self,
+        connection_id: ConnectionId,
+        upstream_url: &str,
+        request: &RequestHead,
+        body: &[u8],
+    ) -> io::Result<()> {
+        let upstream = Upstream::parse(upstream_url)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+        let address = upstream.resolve()?;
+        let request_buffer = upstream.request_bytes(request, body);
+        if request_buffer.len() > self.limits.max_read_buffer_size {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "upstream request exceeds the configured read-buffer limit",
+            ));
+        }
+
+        let mut socket = TcpStream::connect(address)?;
+        self.poll.registry().register(
+            &mut socket,
+            connection_id.token(SocketRole::Upstream)?,
+            Interest::READABLE.add(Interest::WRITABLE),
+        )?;
+        self.connections[connection_id.slot].proxy = Some(ProxyState {
+            upstream: socket,
+            request_buffer,
+            request_offset: 0,
+            upstream_eof: false,
+        });
+        Ok(())
+    }
+
+    fn write_upstream_request(&mut self, connection_id: ConnectionId) -> io::Result<()> {
+        use std::io::Write;
+
+        if !self.is_current(connection_id) || self.connections[connection_id.slot].proxy.is_none() {
+            return Ok(());
+        }
+
+        let mut failed = None;
+        let mut finished = false;
+        {
+            let connection = &mut self.connections[connection_id.slot];
+            let proxy = connection.proxy.as_mut().unwrap();
+            if let Some(error) = proxy.upstream.take_error()? {
+                failed = Some(error);
+            } else {
+                for _ in 0..MAX_WRITES_PER_EVENT {
+                    if proxy.request_offset == proxy.request_buffer.len() {
+                        finished = true;
+                        break;
+                    }
+                    match proxy
+                        .upstream
+                        .write(&proxy.request_buffer[proxy.request_offset..])
+                    {
+                        Ok(0) => {
+                            failed = Some(io::Error::new(
+                                io::ErrorKind::WriteZero,
+                                "upstream write returned zero",
+                            ));
+                            break;
+                        }
+                        Ok(written) => {
+                            proxy.request_offset += written;
+                            connection.last_progress = Instant::now();
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(error) => {
+                            failed = Some(error);
+                            break;
+                        }
+                    }
+                }
+                finished |= proxy.request_offset == proxy.request_buffer.len();
+            }
+        }
+
+        if let Some(error) = failed {
+            eprintln!("upstream request write failed: {error}");
+            return self.fail_proxy(connection_id, "upstream connection failed");
+        }
+        if finished {
+            let reregister = {
+                let proxy = self.connections[connection_id.slot].proxy.as_mut().unwrap();
+                self.poll.registry().reregister(
+                    &mut proxy.upstream,
+                    connection_id.token(SocketRole::Upstream)?,
+                    Interest::READABLE,
+                )
+            };
+            if let Err(error) = reregister {
+                eprintln!("failed to register upstream readable interest: {error}");
+                self.fail_proxy(connection_id, "upstream connection failed")?;
+            }
+        } else {
+            self.pending_upstream_writes.insert(connection_id);
+        }
+        Ok(())
+    }
+
+    fn read_upstream_response(&mut self, connection_id: ConnectionId) -> io::Result<()> {
+        use std::io::Read;
+
+        if !self.is_current(connection_id)
+            || self.connections[connection_id.slot].proxy.is_none()
+            || !self.connections[connection_id.slot].write_buffer.is_empty()
+        {
+            return Ok(());
+        }
+
+        let mut buffer = [0_u8; 8 * 1024];
+        let read_limit = buffer.len().min(self.limits.max_write_buffer_size);
+        let result = {
+            let connection = &mut self.connections[connection_id.slot];
+            let proxy = connection.proxy.as_mut().unwrap();
+            loop {
+                match proxy.upstream.read(&mut buffer[..read_limit]) {
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    result => break result,
+                }
+            }
+        };
+
+        match result {
+            Ok(0) => self.mark_upstream_eof(connection_id),
+            Ok(read) => {
+                let connection = &mut self.connections[connection_id.slot];
+                connection.write_buffer.extend_from_slice(&buffer[..read]);
+                connection.write_offset = 0;
+                connection.last_progress = Instant::now();
+                self.reregister_client(connection_id, Interest::WRITABLE)
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(()),
+            Err(error) => {
+                eprintln!("upstream response read failed: {error}");
+                self.fail_proxy(connection_id, "upstream response failed")
+            }
+        }
+    }
+
+    fn mark_upstream_eof(&mut self, connection_id: ConnectionId) -> io::Result<()> {
+        if !self.is_current(connection_id) {
+            return Ok(());
+        }
+        if let Some(proxy) = self.connections[connection_id.slot].proxy.as_mut() {
+            proxy.upstream_eof = true;
+            if let Err(error) = self.poll.registry().deregister(&mut proxy.upstream) {
+                eprintln!("failed to deregister completed upstream: {error}");
+            }
+        }
+        if self.connections[connection_id.slot].write_buffer.is_empty() {
+            self.remove_connection(connection_id)?;
+        }
+        Ok(())
+    }
+
+    fn fail_proxy(&mut self, connection_id: ConnectionId, message: &str) -> io::Result<()> {
+        if !self.is_current(connection_id) {
+            return Ok(());
+        }
+        eprintln!("proxy connection {} failed: {message}", connection_id.slot);
+        let can_send_error = self.connections[connection_id.slot].write_buffer.is_empty();
+        if let Some(mut proxy) = self.connections[connection_id.slot].proxy.take() {
+            #[cfg(target_os = "linux")]
+            if let Ok(Some(error)) = proxy.upstream.take_error() {
+                eprintln!("upstream SO_ERROR: {error}");
+            }
+            if let Err(error) = self.poll.registry().deregister(&mut proxy.upstream) {
+                eprintln!("failed to deregister failed upstream: {error}");
+            }
+        }
+        self.pending_upstream_reads.remove(&connection_id);
+        self.pending_upstream_writes.remove(&connection_id);
+        if can_send_error {
+            self.queue_response(connection_id, response_bytes(502, message))
+        } else {
+            self.remove_connection(connection_id)
+        }
+    }
+
+    fn reregister_client(
+        &mut self,
+        connection_id: ConnectionId,
+        interest: Interest,
+    ) -> io::Result<()> {
+        let result = {
+            let connection = &mut self.connections[connection_id.slot];
+            self.poll.registry().reregister(
+                &mut connection.socket,
+                connection_id.token(SocketRole::Client)?,
+                interest,
+            )
+        };
+        if let Err(error) = result {
+            eprintln!("failed to reregister proxy client: {error}");
+            self.remove_connection(connection_id)?;
+        }
         Ok(())
     }
 
@@ -493,8 +843,25 @@ impl EpollWorker {
         let write_finished = self.is_current(connection_id)
             && self.connections[connection_id.slot].write_offset
                 == self.connections[connection_id.slot].write_buffer.len();
-        if write_failed || write_finished {
+        if write_failed {
             self.remove_connection(connection_id)?;
+        } else if write_finished && self.is_current(connection_id) {
+            let proxy_state = self.connections[connection_id.slot]
+                .proxy
+                .as_ref()
+                .map(|proxy| proxy.upstream_eof);
+            match proxy_state {
+                None => self.remove_connection(connection_id)?,
+                Some(_) if self.draining => self.remove_connection(connection_id)?,
+                Some(true) => self.remove_connection(connection_id)?,
+                Some(false) => {
+                    let connection = &mut self.connections[connection_id.slot];
+                    connection.write_buffer.clear();
+                    connection.write_offset = 0;
+                    self.reregister_client(connection_id, Interest::READABLE)?;
+                    self.pending_upstream_reads.insert(connection_id);
+                }
+            }
         } else if self.is_current(connection_id) {
             // We stopped because the per-event work budget was exhausted, not
             // because the socket returned WouldBlock. Resume it ourselves so
@@ -552,7 +919,16 @@ impl EpollWorker {
     fn remove_connection(&mut self, connection_id: ConnectionId) -> io::Result<()> {
         if self.is_current(connection_id) {
             self.pending_writes.remove(&connection_id);
+            self.pending_upstream_reads.remove(&connection_id);
+            self.pending_upstream_writes.remove(&connection_id);
             let mut connection = self.connections.remove(connection_id.slot);
+            if let Some(mut proxy) = connection.proxy.take() {
+                if !proxy.upstream_eof {
+                    if let Err(error) = self.poll.registry().deregister(&mut proxy.upstream) {
+                        eprintln!("failed to deregister upstream connection: {error}");
+                    }
+                }
+            }
             if let Err(error) = self.poll.registry().deregister(&mut connection.socket) {
                 eprintln!("failed to deregister connection: {error}");
             }
@@ -578,7 +954,7 @@ impl EpollWorker {
             connection.write_offset = 0;
             self.poll.registry().reregister(
                 &mut connection.socket,
-                connection_id.token()?,
+                connection_id.token(SocketRole::Client)?,
                 Interest::WRITABLE,
             )
         };
@@ -652,7 +1028,10 @@ mod tests {
             generation: 7,
         };
 
-        assert_eq!(ConnectionId::from_token(id.token().unwrap()), Some(id));
+        assert_eq!(
+            ConnectionId::from_token(id.token(SocketRole::Client).unwrap()),
+            Some((id, SocketRole::Client))
+        );
     }
 
     #[test]
@@ -666,11 +1045,17 @@ mod tests {
             generation: next_generation(old.generation),
         };
 
-        assert_ne!(old.token().unwrap(), replacement.token().unwrap());
-        assert_eq!(ConnectionId::from_token(old.token().unwrap()), Some(old));
+        assert_ne!(
+            old.token(SocketRole::Client).unwrap(),
+            replacement.token(SocketRole::Client).unwrap()
+        );
         assert_eq!(
-            ConnectionId::from_token(replacement.token().unwrap()),
-            Some(replacement)
+            ConnectionId::from_token(old.token(SocketRole::Client).unwrap()),
+            Some((old, SocketRole::Client))
+        );
+        assert_eq!(
+            ConnectionId::from_token(replacement.token(SocketRole::Upstream).unwrap()),
+            Some((replacement, SocketRole::Upstream))
         );
     }
 }
