@@ -4,26 +4,46 @@ use std::{
     io,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::Duration,
 };
 
+#[derive(Default)]
+struct ShutdownState {
+    requested: Arc<AtomicBool>,
+    #[cfg(unix)]
+    waker: Mutex<Option<Arc<mio::Waker>>>,
+}
+
 #[derive(Clone, Default)]
-pub struct ShutdownHandle(Arc<AtomicBool>);
+pub struct ShutdownHandle(Arc<ShutdownState>);
 
 impl ShutdownHandle {
     pub fn new() -> Self {
-        Self(Arc::new(AtomicBool::new(false)))
+        Self::default()
     }
     pub fn request(&self) {
-        self.0.store(true, Ordering::Release);
+        self.0.requested.store(true, Ordering::Release);
+        #[cfg(unix)]
+        if let Ok(waker) = self.0.waker.lock() {
+            if let Some(waker) = waker.as_ref() {
+                let _ = waker.wake();
+            }
+        }
     }
     pub fn flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.0)
+        Arc::clone(&self.0.requested)
     }
     pub fn is_requested(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.0.requested.load(Ordering::Acquire)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn install_waker(&self, waker: Arc<mio::Waker>) {
+        if let Ok(mut installed) = self.0.waker.lock() {
+            *installed = Some(waker);
+        }
     }
 }
 

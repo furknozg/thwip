@@ -24,6 +24,51 @@ pub struct Header {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BodyFramingError {
+    InvalidContentLength,
+    ConflictingContentLength,
+    UnsupportedTransferEncoding,
+}
+
+impl RequestHead {
+    /// Returns the request body length for the subset of HTTP/1 framing the
+    /// server currently supports. Transfer-Encoding is rejected until a
+    /// chunked decoder exists.
+    pub fn body_length(&self) -> Result<usize, BodyFramingError> {
+        if self
+            .headers
+            .iter()
+            .any(|header| header.name == "transfer-encoding")
+        {
+            return Err(BodyFramingError::UnsupportedTransferEncoding);
+        }
+
+        let mut content_length = None;
+        for header in self
+            .headers
+            .iter()
+            .filter(|header| header.name == "content-length")
+        {
+            if header.value.is_empty() || !header.value.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(BodyFramingError::InvalidContentLength);
+            }
+            let value = header
+                .value
+                .parse::<usize>()
+                .map_err(|_| BodyFramingError::InvalidContentLength)?;
+            match content_length {
+                Some(previous) if previous != value => {
+                    return Err(BodyFramingError::ConflictingContentLength)
+                }
+                _ => content_length = Some(value),
+            }
+        }
+
+        Ok(content_length.unwrap_or(0))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RequestHeadParse {
     Incomplete,
     Complete {
@@ -196,5 +241,41 @@ mod tests {
     fn rejects_a_malformed_header() {
         let error = parse_request_head(b"GET / HTTP/1.1\r\nHost\r\n\r\n").unwrap_err();
         assert_eq!(error, ParseError::InvalidHeader);
+    }
+
+    #[test]
+    fn validates_content_length_and_rejects_transfer_encoding() {
+        let RequestHeadParse::Complete { request, .. } = parse_request_head(
+            b"POST / HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\n",
+        )
+        .unwrap() else {
+            panic!("expected complete request head");
+        };
+        assert_eq!(request.body_length(), Ok(5));
+
+        let RequestHeadParse::Complete { request, .. } =
+            parse_request_head(b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n").unwrap()
+        else {
+            panic!("expected complete request head");
+        };
+        assert_eq!(
+            request.body_length(),
+            Err(BodyFramingError::UnsupportedTransferEncoding)
+        );
+    }
+
+    #[test]
+    fn rejects_conflicting_content_lengths() {
+        let RequestHeadParse::Complete { request, .. } = parse_request_head(
+            b"POST / HTTP/1.1\r\nContent-Length: 4\r\nContent-Length: 5\r\n\r\n",
+        )
+        .unwrap() else {
+            panic!("expected complete request head");
+        };
+
+        assert_eq!(
+            request.body_length(),
+            Err(BodyFramingError::ConflictingContentLength)
+        );
     }
 }

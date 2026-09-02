@@ -5,7 +5,8 @@ pub use listener::{
 
 mod http;
 pub use http::{
-    parse_request_head, Header, HttpVersion, ParseError, RequestHead, RequestHeadParse,
+    parse_request_head, BodyFramingError, Header, HttpVersion, ParseError, RequestHead,
+    RequestHeadParse,
 };
 
 mod router;

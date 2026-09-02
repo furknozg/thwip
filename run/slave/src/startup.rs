@@ -43,12 +43,16 @@ pub fn start_worker(cpu_id: usize, config: &Config) -> io::Result<()> {
 }
 
 fn install_shutdown_signals(shutdown: &ShutdownHandle) -> io::Result<()> {
-    for signal in [
+    let mut signals = signal_hook::iterator::Signals::new([
         signal_hook::consts::signal::SIGINT,
         signal_hook::consts::signal::SIGTERM,
-    ] {
-        signal_hook::flag::register(signal, shutdown.flag())?;
-    }
+    ])?;
+    let shutdown = shutdown.clone();
+    std::thread::spawn(move || {
+        if signals.forever().next().is_some() {
+            shutdown.request();
+        }
+    });
     Ok(())
 }
 

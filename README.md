@@ -6,9 +6,10 @@ processes. Every worker owns an async event loop and can serve static files,
 return configured responses, or proxy requests upstream.
 
 The project can bind worker-owned sockets and, through the `epoll`/`kqueue`
-readiness path, parse one HTTP/1.x request head, select a virtual host from
-its `Host` header, return configured fixed responses, and serve small static
-files. Proxying, keep-alive, and the `io_uring` runtime remain pending.
+readiness path, parse framed HTTP/1.x requests, select a virtual host from its
+`Host` header, return configured fixed responses, and serve small static files.
+Proxying, keep-alive, chunked request bodies, and the `io_uring` runtime remain
+pending.
 
 ## Goals
 
@@ -65,13 +66,16 @@ files. Proxying, keep-alive, and the `io_uring` runtime remain pending.
   read/write work, and a shutdown drain deadline.
 - [x] Configure those safeguards in the shared `[worker]` section, with safe
   defaults and zero-value rejection.
-- [ ] Add overload and slow-client coverage for the configured safeguards.
+- [ ] Add overload coverage for the configured safeguards; fragmented requests,
+  slow response readers, and client disconnects have live TCP coverage.
 - [x] Implement incremental HTTP/1.x request-head parsing with malformed-head
   and request-head-size errors.
 - [x] Implement fixed `response` actions with HTTP/1.1 framing and
   `Connection: close`.
-- [ ] Implement keep-alive, request bodies, request-size limits, and complete
-  HTTP response framing semantics.
+- [x] Validate `Content-Length`, wait for complete request bodies before routing,
+  reject unsupported transfer encoding, and explicitly close every response.
+- [ ] Expose request bodies to actions, implement chunked decoding and
+  keep-alive, and complete HTTP response framing semantics.
 - [x] Implement small, safe static-file serving: `GET`/`HEAD`, index files,
   query stripping, traversal protection, root containment, MIME types, and an
   in-memory file-size limit.
@@ -96,12 +100,15 @@ files. Proxying, keep-alive, and the `io_uring` runtime remain pending.
   events.
 - [x] Maintain per-connection read/write state and only subscribe to writable
   events while output is pending.
-- [ ] Add native `epoll` handling for `EPOLLERR`, `EPOLLHUP`, `EPOLLRDHUP`,
-  interrupted syscalls, and descriptor reuse. The shared `mio` loop closes
-  reported socket errors and read/write closures today.
-- [ ] Add an `eventfd`/pipe wake-up mechanism for control messages and shutdown.
-- [ ] Test slow clients, partial writes, half-closed connections, and file
-  descriptor exhaustion.
+- [x] Handle `EPOLLERR`, `EPOLLHUP`, and `EPOLLRDHUP` through `mio` error/close
+  readiness, inspect Linux `SO_ERROR`, retry interrupted syscalls, and reject
+  stale events with generation-aware connection tokens.
+- [x] Wake the readiness poll immediately for shutdown/control through
+  `mio::Waker` (eventfd-style on Linux and the native kqueue equivalent).
+- [x] Test fragmented requests, slow response readers/partial writes, clean
+  disconnects, half-closes, and forced read/write resets against the live
+  readiness worker.
+- [ ] Test file descriptor exhaustion.
 
 ### `kqueue` mode
 
