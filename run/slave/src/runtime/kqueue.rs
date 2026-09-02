@@ -15,7 +15,7 @@ impl Runtime for KqueueRuntime {
             target_os = "dragonfly"
         ))]
         {
-            super::epoll::run_readiness(context, self.max_events)
+            super::readiness::run(context, self.max_events)
         }
         #[cfg(not(any(
             target_os = "macos",
