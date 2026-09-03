@@ -10,7 +10,9 @@ use super::operation::OperationId;
 
 pub(super) struct UringListener {
     socket: OwnedFd,
+    #[allow(dead_code)] // Used when accepted connections begin HTTP routing.
     pub(super) default_server: usize,
+    #[allow(dead_code)] // Used when accepted connections begin HTTP routing.
     pub(super) server_indices: Vec<usize>,
     generation: u16,
     accept_pending: bool,
@@ -43,6 +45,7 @@ impl UringListener {
             ptr::null_mut(),
             ptr::null_mut(),
         )
+        .flags(libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK)
         .build()
         .user_data(operation.encode()))
     }

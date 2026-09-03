@@ -1,4 +1,5 @@
 use super::{
+    connection::{next_generation, UringConnection},
     listener::UringListener,
     operation::{OperationId, OperationKind},
     IoUringRuntime,
@@ -6,6 +7,7 @@ use super::{
 use crate::{DnsLimits, ProxyLimits, ShutdownHandle, WorkerContext, WorkerLimits};
 use io_uring::{cqueue, squeue, IoUring};
 use proxy_common::Server;
+use slab::Slab;
 use std::{
     io,
     os::fd::{FromRawFd, OwnedFd},
@@ -16,6 +18,9 @@ pub struct IoUringWorker {
     listeners: Vec<UringListener>,
     servers: Vec<Server>,
     shutdown: ShutdownHandle,
+    connections: Slab<UringConnection>,
+    generations: Vec<u16>,
+    buffer_size: usize,
     limits: WorkerLimits,
     proxy_limits: ProxyLimits,
     dns_limits: DnsLimits,
@@ -29,6 +34,7 @@ struct Completion {
 impl IoUringWorker {
     /// Build the ring and take ownership of every listener in the worker context.
     pub(super) fn new(runtime: IoUringRuntime, context: WorkerContext) -> io::Result<Self> {
+        let buffer_size = runtime.buf_size;
         let ring: IoUring<squeue::Entry, cqueue::Entry> = IoUring::builder()
             .setup_cqsize(runtime.cq_entries)
             .build(runtime.sq_entries)?;
@@ -49,6 +55,9 @@ impl IoUringWorker {
             ring,
             listeners,
             shutdown: context.shutdown,
+            connections: Slab::new(),
+            generations: Vec::new(),
+            buffer_size,
             servers: context.servers,
             limits: context.limits,
             proxy_limits: context.proxy_limits,
@@ -111,8 +120,9 @@ impl IoUringWorker {
         listener.mark_accept_completed();
 
         if let Some(accepted) = accepted {
-            // Connection storage and recv submission are the next milestone.
-            drop(accepted);
+            if let Err(error) = self.insert_connection(accepted, listener_idx) {
+                eprintln!("failed to retain accepted connection: {error}");
+            }
         } else {
             let error = io::Error::from_raw_os_error(-result);
             eprintln!("listener {listener_idx} accept failed: {error}");
@@ -124,11 +134,48 @@ impl IoUringWorker {
         Ok(())
     }
 
+    fn insert_connection(
+        &mut self,
+        socket: OwnedFd,
+        listener_index: usize,
+    ) -> io::Result<OperationId> {
+        if self.connections.len() >= self.limits.max_connections {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "connection limit reached",
+            ));
+        }
+
+        let entry = self.connections.vacant_entry();
+        let slot = entry.key();
+        let operation_slot = u32::try_from(slot).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "connection index exceeds io_uring operation capacity",
+            )
+        })?;
+        if self.generations.len() <= slot {
+            self.generations.resize(slot + 1, 0);
+        }
+        let generation = next_generation(self.generations[slot]);
+        self.generations[slot] = generation;
+        entry.insert(UringConnection::new(
+            socket,
+            generation,
+            listener_index,
+            self.buffer_size,
+        ));
+
+        Ok(OperationId::read(operation_slot, generation))
+    }
+
     /// Submit initial operations and dispatch completions until shutdown.
     pub(super) fn run(mut self) -> io::Result<()> {
         let _owned_resources = (
             &self.ring,
             &self.listeners,
+            &self.connections,
+            &self.generations,
             &self.servers,
             &self.shutdown,
             &self.limits,

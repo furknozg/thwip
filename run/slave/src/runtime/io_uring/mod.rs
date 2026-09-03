@@ -29,6 +29,9 @@ impl Runtime for IoUringRuntime {
 mod operation;
 
 #[cfg(target_os = "linux")]
+mod connection;
+
+#[cfg(target_os = "linux")]
 mod worker;
 
 #[cfg(target_os = "linux")]
