@@ -26,4 +26,5 @@ mio = { version = "1", features = ["os-poll", "net"] }
 slab = "0.4"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-tokio-uring = "0.5"
+io-uring = "0.7"
+libc = "0.2"

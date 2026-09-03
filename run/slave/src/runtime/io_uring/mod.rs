@@ -9,22 +9,14 @@ pub struct IoUringRuntime {
 }
 
 impl Runtime for IoUringRuntime {
-    fn run(self, _context: WorkerContext) -> io::Result<()> {
+    fn run(self, context: WorkerContext) -> io::Result<()> {
         #[cfg(target_os = "linux")]
         {
-            let _ = (
-                self.sq_entries,
-                self.cq_entries,
-                self.buf_ring_size,
-                self.buf_size,
-            );
-            Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "io_uring runtime has not been implemented yet",
-            ))
+            worker::IoUringWorker::new(self, context)?.run()
         }
         #[cfg(not(target_os = "linux"))]
         {
+            let _ = context;
             Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "io_uring is only supported on Linux",
@@ -32,3 +24,9 @@ impl Runtime for IoUringRuntime {
         }
     }
 }
+
+#[cfg(target_os = "linux")]
+mod operation;
+
+#[cfg(target_os = "linux")]
+mod worker;
