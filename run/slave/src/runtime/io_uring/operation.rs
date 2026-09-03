@@ -17,15 +17,11 @@ pub(super) struct OperationId {
 
 pub const CONTROL_USER_DATA: u64 = 0;
 
-
 impl OperationId {
     /// Encode this operation into the `user_data` field carried by an SQE/CQE.
     pub fn encode(self) -> u64 {
-        ((self.kind as u64) << 48) 
-        | ((self.generation as u64) << 32)
-        | self.slot as u64
+        ((self.kind as u64) << 48) | ((self.generation as u64) << 32) | self.slot as u64
     }
-
 
     /// Decode completion `user_data`, rejecting reserved or unknown values.
     pub fn decode(value: u64) -> Option<Self> {
@@ -35,7 +31,7 @@ impl OperationId {
             3 => OperationKind::Write,
             _ => return None,
         };
-        
+
         let generation = ((value >> 32) & 0xffff) as u16;
         if generation == 0 {
             return None;
@@ -44,32 +40,31 @@ impl OperationId {
         Some(Self {
             slot: value as u32,
             generation,
-            kind
+            kind,
         })
-
     }
 
-    pub const fn accept(slot: u32, generation: u16) -> Self { 
-        Self { 
+    pub const fn accept(slot: u32, generation: u16) -> Self {
+        Self {
             slot,
             generation,
-            kind: OperationKind::Accept
+            kind: OperationKind::Accept,
         }
     }
 
-    pub const fn read(slot: u32, generation: u16) -> Self { 
-        Self { 
+    pub const fn read(slot: u32, generation: u16) -> Self {
+        Self {
             slot,
             generation,
-            kind: OperationKind::Read
+            kind: OperationKind::Read,
         }
     }
 
-    pub const fn write(slot: u32, generation: u16) -> Self { 
-        Self { 
+    pub const fn write(slot: u32, generation: u16) -> Self {
+        Self {
             slot,
             generation,
-            kind: OperationKind::Write
+            kind: OperationKind::Write,
         }
     }
 }

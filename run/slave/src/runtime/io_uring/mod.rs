@@ -31,6 +31,5 @@ mod operation;
 #[cfg(target_os = "linux")]
 mod worker;
 
-
 #[cfg(target_os = "linux")]
 mod listener;
