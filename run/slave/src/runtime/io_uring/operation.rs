@@ -15,14 +15,61 @@ pub(super) struct OperationId {
     pub(super) kind: OperationKind,
 }
 
+pub const CONTROL_USER_DATA: u64 = 0;
+
+
 impl OperationId {
     /// Encode this operation into the `user_data` field carried by an SQE/CQE.
     pub fn encode(self) -> u64 {
-        todo!("encode the operation kind, generation, and slot")
+        ((self.kind as u64) << 48) 
+        | ((self.generation as u64) << 32)
+        | self.slot as u64
     }
 
+
     /// Decode completion `user_data`, rejecting reserved or unknown values.
-    pub fn decode(_value: u64) -> Option<Self> {
-        todo!("decode and validate an io_uring operation identifier")
+    pub fn decode(value: u64) -> Option<Self> {
+        let kind = match (value >> 48) as u16 {
+            1 => OperationKind::Accept,
+            2 => OperationKind::Read,
+            3 => OperationKind::Write,
+            _ => return None,
+        };
+        
+        let generation = ((value >> 32) & 0xffff) as u16;
+        if generation == 0 {
+            return None;
+        }
+
+        Some(Self {
+            slot: value as u32,
+            generation,
+            kind
+        })
+
+    }
+
+    pub const fn accept(slot: u32, generation: u16) -> Self { 
+        Self { 
+            slot,
+            generation,
+            kind: OperationKind::Accept
+        }
+    }
+
+    pub const fn read(slot: u32, generation: u16) -> Self { 
+        Self { 
+            slot,
+            generation,
+            kind: OperationKind::Read
+        }
+    }
+
+    pub const fn write(slot: u32, generation: u16) -> Self { 
+        Self { 
+            slot,
+            generation,
+            kind: OperationKind::Write
+        }
     }
 }
