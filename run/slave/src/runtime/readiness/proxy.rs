@@ -66,30 +66,3 @@ impl ProxyState {
         self.phase_progress_at = Instant::now();
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn each_phase_uses_its_own_timeout() {
-        let limits = ProxyLimits {
-            connect_timeout: Duration::from_millis(11),
-            write_timeout: Duration::from_millis(22),
-            read_timeout: Duration::from_millis(33),
-        };
-
-        assert_eq!(
-            ProxyPhase::Connecting.timeout(limits),
-            Duration::from_millis(11)
-        );
-        assert_eq!(
-            ProxyPhase::WritingRequest.timeout(limits),
-            Duration::from_millis(22)
-        );
-        assert_eq!(
-            ProxyPhase::ReadingResponse.timeout(limits),
-            Duration::from_millis(33)
-        );
-    }
-}

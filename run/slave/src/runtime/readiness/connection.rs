@@ -12,7 +12,13 @@ pub(super) enum ConnectionPhase {
         pending_request: Option<PendingRequest>,
     },
     WritingResponse,
+    Resolving(ResolvingState),
     Proxying(ProxyState),
+}
+
+pub(super) struct ResolvingState {
+    pub(super) request_buffer: Vec<u8>,
+    pub(super) started_at: Instant,
 }
 
 pub(super) struct PendingRequest {
@@ -52,6 +58,17 @@ impl Connection {
         matches!(self.phase, ConnectionPhase::Proxying(_))
     }
 
+    pub(super) fn is_resolving(&self) -> bool {
+        matches!(self.phase, ConnectionPhase::Resolving(_))
+    }
+
+    pub(super) fn is_handling_request(&self) -> bool {
+        matches!(
+            self.phase,
+            ConnectionPhase::Resolving(_) | ConnectionPhase::Proxying(_)
+        )
+    }
+
     pub(super) fn pending_request(&self) -> Option<&PendingRequest> {
         match &self.phase {
             ConnectionPhase::Reading { pending_request } => pending_request.as_ref(),
@@ -74,6 +91,30 @@ impl Connection {
 
     pub(super) fn begin_response(&mut self) {
         self.phase = ConnectionPhase::WritingResponse;
+    }
+
+    pub(super) fn begin_resolving(&mut self, request_buffer: Vec<u8>) {
+        self.phase = ConnectionPhase::Resolving(ResolvingState {
+            request_buffer,
+            started_at: Instant::now(),
+        });
+    }
+
+    pub(super) fn resolution(&self) -> Option<&ResolvingState> {
+        match &self.phase {
+            ConnectionPhase::Resolving(resolution) => Some(resolution),
+            _ => None,
+        }
+    }
+
+    pub(super) fn take_resolution(&mut self) -> Option<ResolvingState> {
+        match std::mem::replace(&mut self.phase, ConnectionPhase::WritingResponse) {
+            ConnectionPhase::Resolving(resolution) => Some(resolution),
+            previous => {
+                self.phase = previous;
+                None
+            }
+        }
     }
 
     pub(super) fn begin_proxy(&mut self, proxy: ProxyState) {

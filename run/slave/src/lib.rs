@@ -19,8 +19,8 @@ pub use static_files::{parse_request_target, serve_static, static_response_bytes
 
 mod runtime;
 pub use runtime::{
-    run_epoll, run_epoll_with_shutdown, EpollRuntime, IoUringRuntime, KqueueRuntime, ProxyLimits,
-    Runtime, ShutdownHandle, WorkerContext, WorkerLimits,
+    run_epoll, run_epoll_with_shutdown, DnsLimits, EpollRuntime, IoUringRuntime, KqueueRuntime,
+    ProxyLimits, Runtime, ShutdownHandle, WorkerContext, WorkerLimits,
 };
 
 mod startup;

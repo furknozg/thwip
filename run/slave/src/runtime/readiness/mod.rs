@@ -2,7 +2,11 @@
 
 mod connection;
 mod proxy;
+mod resolver;
 mod token;
 mod worker;
+
+#[cfg(test)]
+mod tests;
 
 pub(crate) use worker::run;

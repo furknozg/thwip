@@ -13,6 +13,10 @@ connect_timeout_ms = 3000
 write_timeout_ms = 30000
 read_timeout_ms = 30000
 
+[dns]
+resolver_threads = 2
+timeout_ms = 3000
+
 [runtime]
 type = "kqueue"
 max_events = 2048

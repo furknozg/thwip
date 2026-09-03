@@ -1,5 +1,5 @@
 use crate::RequestHead;
-use std::{collections::HashSet, fmt, io, net::SocketAddr, net::ToSocketAddrs};
+use std::{collections::HashSet, fmt};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Upstream {
@@ -64,13 +64,8 @@ impl Upstream {
         })
     }
 
-    pub(crate) fn resolve(&self) -> io::Result<SocketAddr> {
-        self.connect_address
-            .to_socket_addrs()?
-            .next()
-            .ok_or_else(|| {
-                io::Error::new(io::ErrorKind::AddrNotAvailable, "upstream has no address")
-            })
+    pub(crate) fn connect_address(&self) -> &str {
+        &self.connect_address
     }
 
     pub(crate) fn request_bytes(&self, request: &RequestHead, body: &[u8]) -> Vec<u8> {
@@ -117,45 +112,5 @@ impl Upstream {
         bytes.extend_from_slice(b"Connection: close\r\n\r\n");
         bytes.extend_from_slice(body);
         bytes
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{Header, HttpVersion};
-
-    #[test]
-    fn builds_close_delimited_upstream_request_and_removes_hop_by_hop_headers() {
-        let upstream = Upstream::parse("http://127.0.0.1:8080/base").unwrap();
-        let request = RequestHead {
-            method: "POST".into(),
-            target: "/items".into(),
-            version: HttpVersion::Http11,
-            headers: vec![
-                Header {
-                    name: "host".into(),
-                    value: "public.test".into(),
-                },
-                Header {
-                    name: "content-length".into(),
-                    value: "2".into(),
-                },
-                Header {
-                    name: "connection".into(),
-                    value: "x-remove".into(),
-                },
-                Header {
-                    name: "x-remove".into(),
-                    value: "secret".into(),
-                },
-            ],
-        };
-
-        let bytes = String::from_utf8(upstream.request_bytes(&request, b"{}")).unwrap();
-        assert!(bytes.starts_with("POST /base/items HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n"));
-        assert!(bytes.contains("content-length: 2\r\n"));
-        assert!(!bytes.contains("x-remove"));
-        assert!(bytes.ends_with("Connection: close\r\n\r\n{}"));
     }
 }

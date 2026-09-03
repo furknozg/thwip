@@ -1,5 +1,5 @@
 use crate::BoundListenerGroup;
-use proxy_common::{ProxyTimeoutConfig, Server, WorkerConfig};
+use proxy_common::{DnsConfig, ProxyTimeoutConfig, Server, WorkerConfig};
 use std::{
     io,
     sync::{
@@ -53,6 +53,7 @@ pub struct WorkerContext {
     pub shutdown: ShutdownHandle,
     pub limits: WorkerLimits,
     pub proxy_limits: ProxyLimits,
+    pub dns_limits: DnsLimits,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -102,6 +103,27 @@ impl ProxyLimits {
 impl Default for ProxyLimits {
     fn default() -> Self {
         Self::from_config(&ProxyTimeoutConfig::default())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DnsLimits {
+    pub resolver_threads: usize,
+    pub timeout: Duration,
+}
+
+impl DnsLimits {
+    pub fn from_config(config: &DnsConfig) -> Self {
+        Self {
+            resolver_threads: config.resolver_threads,
+            timeout: Duration::from_millis(config.timeout_ms),
+        }
+    }
+}
+
+impl Default for DnsLimits {
+    fn default() -> Self {
+        Self::from_config(&DnsConfig::default())
     }
 }
 

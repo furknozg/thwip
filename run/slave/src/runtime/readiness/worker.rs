@@ -1,4 +1,4 @@
-use super::super::{ProxyLimits, ShutdownHandle, WorkerContext, WorkerLimits};
+use super::super::{DnsLimits, ProxyLimits, ShutdownHandle, WorkerContext, WorkerLimits};
 #[cfg(unix)]
 use crate::proxy::Upstream;
 #[cfg(unix)]
@@ -26,6 +26,8 @@ use super::connection::{Connection, PendingRequest};
 #[cfg(unix)]
 use super::proxy::{ProxyPhase, ProxyState};
 #[cfg(unix)]
+use super::resolver::{DnsResolver, ResolveResult};
+#[cfg(unix)]
 use super::token::{next_generation, ConnectionId, SocketRole, CONTROL_TOKEN, SLOT_MASK};
 
 #[cfg(unix)]
@@ -46,6 +48,8 @@ struct ReadinessWorker {
     shutdown: ShutdownHandle,
     limits: WorkerLimits,
     proxy_limits: ProxyLimits,
+    dns_limits: DnsLimits,
+    resolver: DnsResolver,
     draining: bool,
     drain_started_at: Option<Instant>,
 }
@@ -109,10 +113,12 @@ impl ReadinessWorker {
             shutdown,
             limits,
             proxy_limits,
+            dns_limits,
         } = context;
         let poll = Poll::new()?;
         let waker = Arc::new(Waker::new(poll.registry(), CONTROL_TOKEN)?);
-        shutdown.install_waker(waker);
+        shutdown.install_waker(Arc::clone(&waker));
+        let resolver = DnsResolver::new(dns_limits.resolver_threads, waker)?;
         let mut listeners: Vec<RegisteredListener> = listener_groups
             .into_iter()
             .map(|listener| RegisteredListener {
@@ -139,6 +145,8 @@ impl ReadinessWorker {
             shutdown,
             limits,
             proxy_limits,
+            dns_limits,
+            resolver,
             draining: false,
             drain_started_at: None,
         })
@@ -158,6 +166,8 @@ impl ReadinessWorker {
                 self.close_all_connections();
                 return Ok(());
             }
+            self.process_dns_results()?;
+            self.close_expired_resolutions()?;
             self.close_expired_proxies()?;
             self.close_idle_connections()?;
 
@@ -215,7 +225,7 @@ impl ReadinessWorker {
     /// socket. This is the only place that maps OS events to application state.
     fn dispatch(&mut self, event: ReadyEvent) -> io::Result<()> {
         if event.token == CONTROL_TOKEN {
-            return Ok(());
+            return self.process_dns_results();
         }
         if event.token.0 < self.listeners.len() {
             if event.readable && !self.draining {
@@ -331,7 +341,7 @@ impl ReadinessWorker {
         if !self.is_current(connection_id) {
             return Ok(());
         }
-        if self.connections[connection_id.slot].is_proxying() {
+        if self.connections[connection_id.slot].is_handling_request() {
             return self.client_during_proxy_ready(connection_id);
         }
 
@@ -520,7 +530,6 @@ impl ReadinessWorker {
     ) -> io::Result<()> {
         let upstream = Upstream::parse(upstream_url)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
-        let address = upstream.resolve()?;
         let request_buffer = upstream.request_bytes(request, body);
         if request_buffer.len() > self.limits.max_read_buffer_size {
             return Err(io::Error::new(
@@ -529,14 +538,73 @@ impl ReadinessWorker {
             ));
         }
 
-        let mut socket = TcpStream::connect(address)?;
-        self.poll.registry().register(
+        let connect_address = upstream.connect_address().to_owned();
+        self.connections[connection_id.slot].begin_resolving(request_buffer);
+        self.resolver.resolve(connection_id, connect_address)
+    }
+
+    fn process_dns_results(&mut self) -> io::Result<()> {
+        for result in self.resolver.drain() {
+            self.finish_resolution(result)?;
+        }
+        Ok(())
+    }
+
+    fn finish_resolution(&mut self, result: ResolveResult) -> io::Result<()> {
+        let connection_id = result.connection_id;
+        if !self.is_current(connection_id) || !self.connections[connection_id.slot].is_resolving() {
+            return Ok(());
+        }
+
+        let addresses = match result.addresses {
+            Ok(addresses) if !addresses.is_empty() => addresses,
+            Ok(_) => {
+                return self.fail_resolution(connection_id, 502, "upstream has no address");
+            }
+            Err(error) => {
+                eprintln!("upstream DNS resolution failed: {error}");
+                return self.fail_resolution(connection_id, 502, "upstream DNS resolution failed");
+            }
+        };
+        let Some(resolution) = self.connections[connection_id.slot].take_resolution() else {
+            return Ok(());
+        };
+        let mut socket = match TcpStream::connect(addresses[0]) {
+            Ok(socket) => socket,
+            Err(error) => {
+                eprintln!("failed to connect resolved upstream: {error}");
+                return self.queue_response(
+                    connection_id,
+                    response_bytes(502, "upstream connection failed"),
+                );
+            }
+        };
+        if let Err(error) = self.poll.registry().register(
             &mut socket,
             connection_id.token(SocketRole::Upstream)?,
             Interest::READABLE.add(Interest::WRITABLE),
-        )?;
-        self.connections[connection_id.slot].begin_proxy(ProxyState::new(socket, request_buffer));
+        ) {
+            eprintln!("failed to register resolved upstream: {error}");
+            return self.queue_response(
+                connection_id,
+                response_bytes(502, "upstream connection failed"),
+            );
+        }
+        self.connections[connection_id.slot]
+            .begin_proxy(ProxyState::new(socket, resolution.request_buffer));
         Ok(())
+    }
+
+    fn fail_resolution(
+        &mut self,
+        connection_id: ConnectionId,
+        status: u16,
+        message: &str,
+    ) -> io::Result<()> {
+        if !self.is_current(connection_id) || !self.connections[connection_id.slot].is_resolving() {
+            return Ok(());
+        }
+        self.queue_response(connection_id, response_bytes(status, message))
     }
 
     fn write_upstream_request(&mut self, connection_id: ConnectionId) -> io::Result<()> {
@@ -912,7 +980,7 @@ impl ReadinessWorker {
             .connections
             .iter()
             .filter_map(|(id, connection)| {
-                (!connection.is_proxying()
+                (!connection.is_handling_request()
                     && now.duration_since(connection.last_progress) >= self.limits.idle_timeout)
                     .then_some(ConnectionId {
                         slot: id,
@@ -923,6 +991,27 @@ impl ReadinessWorker {
         for connection_id in expired {
             eprintln!("connection {} timed out", connection_id.slot);
             self.remove_connection(connection_id)?;
+        }
+        Ok(())
+    }
+
+    fn close_expired_resolutions(&mut self) -> io::Result<()> {
+        let now = Instant::now();
+        let expired: Vec<ConnectionId> =
+            self.connections
+                .iter()
+                .filter_map(|(slot, connection)| {
+                    let resolution = connection.resolution()?;
+                    (now.duration_since(resolution.started_at) >= self.dns_limits.timeout)
+                        .then_some(ConnectionId {
+                            slot,
+                            generation: connection.generation,
+                        })
+                })
+                .collect();
+
+        for connection_id in expired {
+            self.fail_resolution(connection_id, 504, "upstream DNS resolution timed out")?;
         }
         Ok(())
     }

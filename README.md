@@ -9,8 +9,8 @@ The project can bind worker-owned sockets and, through the `epoll`/`kqueue`
 readiness path, parse framed HTTP/1.x requests, select a virtual host from its
 `Host` header, return configured fixed responses, and serve small static files.
 The initial HTTP upstream proxy streams through bounded buffers with
-backpressure. Keep-alive, chunked request bodies, upstream pooling/TLS, and the
-`io_uring` runtime remain pending.
+backpressure and resolves hostnames on a background pool. Keep-alive, chunked
+request bodies, upstream pooling/TLS, and the `io_uring` runtime remain pending.
 
 ## Goals
 
@@ -90,9 +90,10 @@ backpressure. Keep-alive, chunked request bodies, upstream pooling/TLS, and the
 - [x] Implement bounded nonblocking HTTP upstream proxying: forward validated
   request bodies, strip hop-by-hop headers, rewrite `Host`, stream responses
   with client backpressure, and return `502` on upstream failure.
-- [ ] Move DNS resolution off the worker loop; add upstream-specific
-  connect/read/write timeouts, response framing validation, pooling, retries,
-  health checks, and HTTPS upstreams.
+- [x] Move DNS resolution off the worker loop and add generation-safe result
+  delivery plus DNS/connect/write/read timeouts.
+- [ ] Add upstream response framing validation, pooling, retries, health checks,
+  and HTTPS upstreams.
 - [x] Add exact/prefix routing with exact-match priority and longest-prefix
   selection.
 - [x] Add SIGINT/SIGTERM master-to-worker shutdown and response draining.
@@ -175,6 +176,9 @@ backpressure. Keep-alive, chunked request bodies, upstream pooling/TLS, and the
   timeout, and graceful-drain timeout.
 - [x] Add independent upstream connect, request-write, and response-read
   timeouts. Pre-response failures return `504 Gateway Timeout`.
+- [x] Resolve upstream hostnames on a configurable per-worker background pool,
+  wake the readiness loop on completion, ignore stale generation-tagged
+  results, and enforce a separate DNS timeout.
 - [ ] Add separate header/body limits, logging, TLS, and upstream pool settings.
 
 ## README/documentation TODOs
@@ -203,8 +207,7 @@ backpressure. Keep-alive, chunked request bodies, upstream pooling/TLS, and the
 
 ## Suggested delivery order
 
-1. Move DNS off the readiness loop and add upstream response-framing
-   validation.
+1. Add upstream response-framing validation.
 2. Expose validated request bodies to other actions, then add keep-alive and chunked
    request decoding.
 3. Add multi-worker `SO_REUSEPORT` and shutdown tests on Linux and macOS/BSD,

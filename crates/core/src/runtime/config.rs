@@ -22,6 +22,9 @@ pub struct Config {
 
     #[serde(default)]
     pub proxy: ProxyTimeoutConfig,
+
+    #[serde(default)]
+    pub dns: DnsConfig,
 }
 
 /// Limits shared by every worker runtime. Durations are expressed in
@@ -99,6 +102,31 @@ impl Default for ProxyTimeoutConfig {
             connect_timeout_ms: default_proxy_connect_timeout_ms(),
             write_timeout_ms: default_proxy_write_timeout_ms(),
             read_timeout_ms: default_proxy_read_timeout_ms(),
+        }
+    }
+}
+
+/// Settings for resolving upstream hostnames outside the readiness loop.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DnsConfig {
+    #[serde(
+        default = "default_dns_resolver_threads",
+        deserialize_with = "deserialize_positive_usize"
+    )]
+    pub resolver_threads: usize,
+
+    #[serde(
+        default = "default_dns_timeout_ms",
+        deserialize_with = "deserialize_positive_u64"
+    )]
+    pub timeout_ms: u64,
+}
+
+impl Default for DnsConfig {
+    fn default() -> Self {
+        Self {
+            resolver_threads: default_dns_resolver_threads(),
+            timeout_ms: default_dns_timeout_ms(),
         }
     }
 }
@@ -193,6 +221,14 @@ const fn default_proxy_read_timeout_ms() -> u64 {
     30_000
 }
 
+const fn default_dns_resolver_threads() -> usize {
+    2
+}
+
+const fn default_dns_timeout_ms() -> u64 {
+    3_000
+}
+
 fn deserialize_positive_usize<'de, D>(deserializer: D) -> Result<usize, D::Error>
 where
     D: Deserializer<'de>,
@@ -264,6 +300,7 @@ impl Default for Config {
             worker_count: default_worker_count(),
             worker: WorkerConfig::default(),
             proxy: ProxyTimeoutConfig::default(),
+            dns: DnsConfig::default(),
         }
     }
 }

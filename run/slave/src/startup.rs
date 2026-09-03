@@ -2,8 +2,8 @@ use proxy_common::{AsyncRuntimeConfig, Config};
 use std::io;
 
 use crate::{
-    bind_worker_listeners, EpollRuntime, IoUringRuntime, KqueueRuntime, ProxyLimits, Runtime,
-    ShutdownHandle, WorkerContext, WorkerLimits,
+    bind_worker_listeners, DnsLimits, EpollRuntime, IoUringRuntime, KqueueRuntime, ProxyLimits,
+    Runtime, ShutdownHandle, WorkerContext, WorkerLimits,
 };
 
 pub fn start_worker(cpu_id: usize, config: &Config) -> io::Result<()> {
@@ -17,6 +17,7 @@ pub fn start_worker(cpu_id: usize, config: &Config) -> io::Result<()> {
         shutdown,
         limits: WorkerLimits::from_config(&config.worker),
         proxy_limits: ProxyLimits::from_config(&config.proxy),
+        dns_limits: DnsLimits::from_config(&config.dns),
     };
 
     match &config.runtime {

@@ -12,12 +12,13 @@ use slave::EpollRuntime;
 ))]
 use slave::KqueueRuntime;
 use slave::{
-    BoundListenerGroup, ProxyLimits, Runtime, ShutdownHandle, WorkerContext, WorkerLimits,
+    BoundListenerGroup, DnsLimits, ProxyLimits, Runtime, ShutdownHandle, WorkerContext,
+    WorkerLimits,
 };
 use socket2::Socket;
 use std::{
     io::{Read, Write},
-    net::{Shutdown, SocketAddr, TcpListener, TcpStream},
+    net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
     thread::{self, JoinHandle},
     time::Duration,
 };
@@ -128,6 +129,7 @@ fn start_worker_with_proxy_limits(
         shutdown: shutdown.clone(),
         limits,
         proxy_limits,
+        dns_limits: DnsLimits::default(),
     };
     let worker = thread::spawn(move || run_readiness(context));
 
@@ -212,6 +214,37 @@ fn returns_bad_gateway_when_upstream_connect_fails() {
         response.starts_with("HTTP/1.1 502 Bad Gateway\r\n"),
         "unexpected proxy failure response: {response:?}"
     );
+}
+
+#[test]
+fn resolves_hostname_upstreams_on_the_background_pool() {
+    let bind_address = ("localhost", 0).to_socket_addrs().unwrap().next().unwrap();
+    let upstream = TcpListener::bind(bind_address).unwrap();
+    let upstream_port = upstream.local_addr().unwrap().port();
+    let upstream_thread = thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().unwrap();
+        let mut request = [0_u8; 1024];
+        let read = stream.read(&mut request).unwrap();
+        assert!(request[..read]
+            .windows(4)
+            .any(|window| window == b"\r\n\r\n"));
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nresolved")
+            .unwrap();
+    });
+    let worker = start_worker_with_actions(
+        &[(
+            "proxy.test",
+            Action::Proxy {
+                upstream: format!("http://localhost:{upstream_port}"),
+            },
+        )],
+        WorkerLimits::default(),
+    );
+
+    let response = request(worker.address, "proxy.test");
+    assert!(response.ends_with("\r\n\r\nresolved"));
+    upstream_thread.join().unwrap();
 }
 
 #[test]
