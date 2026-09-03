@@ -1,4 +1,4 @@
-use super::super::{ShutdownHandle, WorkerContext, WorkerLimits};
+use super::super::{ProxyLimits, ShutdownHandle, WorkerContext, WorkerLimits};
 #[cfg(unix)]
 use crate::proxy::Upstream;
 #[cfg(unix)]
@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use super::connection::{Connection, PendingRequest};
 #[cfg(unix)]
-use super::proxy::ProxyState;
+use super::proxy::{ProxyPhase, ProxyState};
 #[cfg(unix)]
 use super::token::{next_generation, ConnectionId, SocketRole, CONTROL_TOKEN, SLOT_MASK};
 
@@ -45,6 +45,7 @@ struct ReadinessWorker {
     servers: Vec<Server>,
     shutdown: ShutdownHandle,
     limits: WorkerLimits,
+    proxy_limits: ProxyLimits,
     draining: bool,
     drain_started_at: Option<Instant>,
 }
@@ -107,6 +108,7 @@ impl ReadinessWorker {
             servers,
             shutdown,
             limits,
+            proxy_limits,
         } = context;
         let poll = Poll::new()?;
         let waker = Arc::new(Waker::new(poll.registry(), CONTROL_TOKEN)?);
@@ -136,6 +138,7 @@ impl ReadinessWorker {
             servers,
             shutdown,
             limits,
+            proxy_limits,
             draining: false,
             drain_started_at: None,
         })
@@ -155,6 +158,7 @@ impl ReadinessWorker {
                 self.close_all_connections();
                 return Ok(());
             }
+            self.close_expired_proxies()?;
             self.close_idle_connections()?;
 
             let scheduled_writes: Vec<ConnectionId> = self.pending_writes.drain().collect();
@@ -257,7 +261,7 @@ impl ReadinessWorker {
             return Ok(());
         }
         if event.error {
-            return self.fail_proxy(id, "upstream connection failed");
+            return self.fail_proxy(id, 502, "upstream connection failed");
         }
         if event.writable {
             self.write_upstream_request(id)?;
@@ -531,12 +535,7 @@ impl ReadinessWorker {
             connection_id.token(SocketRole::Upstream)?,
             Interest::READABLE.add(Interest::WRITABLE),
         )?;
-        self.connections[connection_id.slot].begin_proxy(ProxyState {
-            upstream: socket,
-            request_buffer,
-            request_offset: 0,
-            upstream_eof: false,
-        });
+        self.connections[connection_id.slot].begin_proxy(ProxyState::new(socket, request_buffer));
         Ok(())
     }
 
@@ -546,6 +545,12 @@ impl ReadinessWorker {
         if !self.is_current(connection_id) || !self.connections[connection_id.slot].is_proxying() {
             return Ok(());
         }
+        if self.connections[connection_id.slot]
+            .proxy()
+            .is_some_and(|proxy| proxy.phase == ProxyPhase::ReadingResponse)
+        {
+            return Ok(());
+        }
 
         let mut failed = None;
         let mut finished = false;
@@ -553,9 +558,14 @@ impl ReadinessWorker {
         {
             let connection = &mut self.connections[connection_id.slot];
             let proxy = connection.proxy_mut().unwrap();
-            if let Some(error) = proxy.upstream.take_error()? {
-                failed = Some(error);
-            } else {
+            if proxy.phase == ProxyPhase::Connecting {
+                if let Some(error) = proxy.upstream.take_error()? {
+                    failed = Some(error);
+                } else {
+                    proxy.transition(ProxyPhase::WritingRequest);
+                }
+            }
+            if failed.is_none() && proxy.phase == ProxyPhase::WritingRequest {
                 for _ in 0..MAX_WRITES_PER_EVENT {
                     if proxy.request_offset == proxy.request_buffer.len() {
                         finished = true;
@@ -574,6 +584,7 @@ impl ReadinessWorker {
                         }
                         Ok(written) => {
                             proxy.request_offset += written;
+                            proxy.record_progress();
                             made_progress = true;
                         }
                         Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
@@ -594,11 +605,12 @@ impl ReadinessWorker {
 
         if let Some(error) = failed {
             eprintln!("upstream request write failed: {error}");
-            return self.fail_proxy(connection_id, "upstream connection failed");
+            return self.fail_proxy(connection_id, 502, "upstream connection failed");
         }
         if finished {
             let reregister = {
                 let proxy = self.connections[connection_id.slot].proxy_mut().unwrap();
+                proxy.transition(ProxyPhase::ReadingResponse);
                 self.poll.registry().reregister(
                     &mut proxy.upstream,
                     connection_id.token(SocketRole::Upstream)?,
@@ -607,7 +619,7 @@ impl ReadinessWorker {
             };
             if let Err(error) = reregister {
                 eprintln!("failed to register upstream readable interest: {error}");
-                self.fail_proxy(connection_id, "upstream connection failed")?;
+                self.fail_proxy(connection_id, 502, "upstream connection failed")?;
             }
         } else {
             self.pending_upstream_writes.insert(connection_id);
@@ -621,6 +633,9 @@ impl ReadinessWorker {
         if !self.is_current(connection_id)
             || !self.connections[connection_id.slot].is_proxying()
             || !self.connections[connection_id.slot].write_buffer.is_empty()
+            || self.connections[connection_id.slot]
+                .proxy()
+                .is_some_and(|proxy| proxy.phase != ProxyPhase::ReadingResponse)
         {
             return Ok(());
         }
@@ -642,6 +657,11 @@ impl ReadinessWorker {
             Ok(0) => self.mark_upstream_eof(connection_id),
             Ok(read) => {
                 let connection = &mut self.connections[connection_id.slot];
+                {
+                    let proxy = connection.proxy_mut().unwrap();
+                    proxy.response_started = true;
+                    proxy.record_progress();
+                }
                 connection.write_buffer.extend_from_slice(&buffer[..read]);
                 connection.write_offset = 0;
                 connection.last_progress = Instant::now();
@@ -650,7 +670,7 @@ impl ReadinessWorker {
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(()),
             Err(error) => {
                 eprintln!("upstream response read failed: {error}");
-                self.fail_proxy(connection_id, "upstream response failed")
+                self.fail_proxy(connection_id, 502, "upstream response failed")
             }
         }
     }
@@ -671,12 +691,20 @@ impl ReadinessWorker {
         Ok(())
     }
 
-    fn fail_proxy(&mut self, connection_id: ConnectionId, message: &str) -> io::Result<()> {
+    fn fail_proxy(
+        &mut self,
+        connection_id: ConnectionId,
+        status: u16,
+        message: &str,
+    ) -> io::Result<()> {
         if !self.is_current(connection_id) {
             return Ok(());
         }
         eprintln!("proxy connection {} failed: {message}", connection_id.slot);
-        let can_send_error = self.connections[connection_id.slot].write_buffer.is_empty();
+        let can_send_error = self.connections[connection_id.slot]
+            .proxy()
+            .is_some_and(|proxy| !proxy.response_started)
+            && self.connections[connection_id.slot].write_buffer.is_empty();
         if let Some(mut proxy) = self.connections[connection_id.slot].detach_proxy() {
             #[cfg(target_os = "linux")]
             if let Ok(Some(error)) = proxy.upstream.take_error() {
@@ -689,7 +717,7 @@ impl ReadinessWorker {
         self.pending_upstream_reads.remove(&connection_id);
         self.pending_upstream_writes.remove(&connection_id);
         if can_send_error {
-            self.queue_response(connection_id, response_bytes(502, message))
+            self.queue_response(connection_id, response_bytes(status, message))
         } else {
             self.remove_connection(connection_id)
         }
@@ -884,7 +912,8 @@ impl ReadinessWorker {
             .connections
             .iter()
             .filter_map(|(id, connection)| {
-                (now.duration_since(connection.last_progress) >= self.limits.idle_timeout)
+                (!connection.is_proxying()
+                    && now.duration_since(connection.last_progress) >= self.limits.idle_timeout)
                     .then_some(ConnectionId {
                         slot: id,
                         generation: connection.generation,
@@ -894,6 +923,32 @@ impl ReadinessWorker {
         for connection_id in expired {
             eprintln!("connection {} timed out", connection_id.slot);
             self.remove_connection(connection_id)?;
+        }
+        Ok(())
+    }
+
+    /// Proxy timeouts are phase-specific: connecting, sending the request, and
+    /// waiting for response progress each have independent policies.
+    fn close_expired_proxies(&mut self) -> io::Result<()> {
+        let now = Instant::now();
+        let expired: Vec<(ConnectionId, ProxyPhase)> = self
+            .connections
+            .iter()
+            .filter_map(|(slot, connection)| {
+                let proxy = connection.proxy()?;
+                let timeout = proxy.phase.timeout(self.proxy_limits);
+                (now.duration_since(proxy.phase_progress_at) >= timeout).then_some((
+                    ConnectionId {
+                        slot,
+                        generation: connection.generation,
+                    },
+                    proxy.phase,
+                ))
+            })
+            .collect();
+
+        for (connection_id, phase) in expired {
+            self.fail_proxy(connection_id, 504, phase.timeout_message())?;
         }
         Ok(())
     }

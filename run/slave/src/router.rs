@@ -98,6 +98,7 @@ fn reason_phrase(status: u16) -> &'static str {
         500 => "Internal Server Error",
         501 => "Not Implemented",
         502 => "Bad Gateway",
+        504 => "Gateway Timeout",
         _ => "Unknown",
     }
 }

@@ -19,6 +19,9 @@ pub struct Config {
 
     #[serde(default)]
     pub worker: WorkerConfig,
+
+    #[serde(default)]
+    pub proxy: ProxyTimeoutConfig,
 }
 
 /// Limits shared by every worker runtime. Durations are expressed in
@@ -64,6 +67,38 @@ impl Default for WorkerConfig {
             max_write_buffer_size: default_max_write_buffer_size(),
             idle_timeout_ms: default_idle_timeout_ms(),
             drain_timeout_ms: default_drain_timeout_ms(),
+        }
+    }
+}
+
+/// Deadlines for each stage of an upstream proxy exchange.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProxyTimeoutConfig {
+    #[serde(
+        default = "default_proxy_connect_timeout_ms",
+        deserialize_with = "deserialize_positive_u64"
+    )]
+    pub connect_timeout_ms: u64,
+
+    #[serde(
+        default = "default_proxy_write_timeout_ms",
+        deserialize_with = "deserialize_positive_u64"
+    )]
+    pub write_timeout_ms: u64,
+
+    #[serde(
+        default = "default_proxy_read_timeout_ms",
+        deserialize_with = "deserialize_positive_u64"
+    )]
+    pub read_timeout_ms: u64,
+}
+
+impl Default for ProxyTimeoutConfig {
+    fn default() -> Self {
+        Self {
+            connect_timeout_ms: default_proxy_connect_timeout_ms(),
+            write_timeout_ms: default_proxy_write_timeout_ms(),
+            read_timeout_ms: default_proxy_read_timeout_ms(),
         }
     }
 }
@@ -146,6 +181,18 @@ const fn default_drain_timeout_ms() -> u64 {
     10_000
 }
 
+const fn default_proxy_connect_timeout_ms() -> u64 {
+    3_000
+}
+
+const fn default_proxy_write_timeout_ms() -> u64 {
+    30_000
+}
+
+const fn default_proxy_read_timeout_ms() -> u64 {
+    30_000
+}
+
 fn deserialize_positive_usize<'de, D>(deserializer: D) -> Result<usize, D::Error>
 where
     D: Deserializer<'de>,
@@ -216,6 +263,7 @@ impl Default for Config {
             runtime: AsyncRuntimeConfig::default(),
             worker_count: default_worker_count(),
             worker: WorkerConfig::default(),
+            proxy: ProxyTimeoutConfig::default(),
         }
     }
 }

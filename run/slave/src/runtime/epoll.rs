@@ -1,4 +1,4 @@
-use super::{Runtime, ShutdownHandle, WorkerContext, WorkerLimits};
+use super::{ProxyLimits, Runtime, ShutdownHandle, WorkerContext, WorkerLimits};
 use crate::BoundListenerGroup;
 use proxy_common::Server;
 use std::io;
@@ -47,6 +47,7 @@ pub fn run_epoll_with_shutdown(
         servers,
         shutdown,
         limits: WorkerLimits::default(),
+        proxy_limits: ProxyLimits::default(),
     })
 }
 

@@ -11,7 +11,9 @@ use slave::EpollRuntime;
     target_os = "dragonfly"
 ))]
 use slave::KqueueRuntime;
-use slave::{BoundListenerGroup, Runtime, ShutdownHandle, WorkerContext, WorkerLimits};
+use slave::{
+    BoundListenerGroup, ProxyLimits, Runtime, ShutdownHandle, WorkerContext, WorkerLimits,
+};
 use socket2::Socket;
 use std::{
     io::{Read, Write},
@@ -96,6 +98,14 @@ fn start_worker(hosts: &[(&str, String)], limits: WorkerLimits) -> TestWorker {
 }
 
 fn start_worker_with_actions(hosts: &[(&str, Action)], limits: WorkerLimits) -> TestWorker {
+    start_worker_with_proxy_limits(hosts, limits, ProxyLimits::default())
+}
+
+fn start_worker_with_proxy_limits(
+    hosts: &[(&str, Action)],
+    limits: WorkerLimits,
+    proxy_limits: ProxyLimits,
+) -> TestWorker {
     let requested_address: SocketAddr = "127.0.0.1:0".parse().unwrap();
     let socket = TcpListener::bind(requested_address).expect("bind listener");
     socket
@@ -117,6 +127,7 @@ fn start_worker_with_actions(hosts: &[(&str, Action)], limits: WorkerLimits) -> 
         servers,
         shutdown: shutdown.clone(),
         limits,
+        proxy_limits,
     };
     let worker = thread::spawn(move || run_readiness(context));
 
@@ -201,6 +212,47 @@ fn returns_bad_gateway_when_upstream_connect_fails() {
         response.starts_with("HTTP/1.1 502 Bad Gateway\r\n"),
         "unexpected proxy failure response: {response:?}"
     );
+}
+
+#[test]
+fn returns_gateway_timeout_when_upstream_response_stalls() {
+    let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+    let upstream_address = upstream.local_addr().unwrap();
+    let upstream_thread = thread::spawn(move || {
+        let (mut stream, _) = upstream.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = stream.read(&mut buffer).unwrap();
+            assert_ne!(read, 0);
+            request.extend_from_slice(&buffer[..read]);
+        }
+        thread::sleep(Duration::from_millis(300));
+    });
+    let worker = start_worker_with_proxy_limits(
+        &[(
+            "proxy.test",
+            Action::Proxy {
+                upstream: format!("http://{upstream_address}"),
+            },
+        )],
+        WorkerLimits::default(),
+        ProxyLimits {
+            connect_timeout: Duration::from_secs(1),
+            write_timeout: Duration::from_secs(1),
+            read_timeout: Duration::from_millis(25),
+        },
+    );
+
+    let response = request(worker.address, "proxy.test");
+    assert!(
+        response.starts_with("HTTP/1.1 504 Gateway Timeout\r\n"),
+        "unexpected timeout response: {response:?}"
+    );
+    upstream_thread.join().unwrap();
 }
 
 #[test]

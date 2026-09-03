@@ -30,6 +30,8 @@ backpressure. Keep-alive, chunked request bodies, upstream pooling/TLS, and the
 - `run/master`: reads configuration, forks workers, and supervises worker exits.
 - `run/slave`: CPU-pins workers, creates listeners, and contains runtime,
   connection, HTTP parsing, and routing code.
+- `run/slave/src/runtime/readiness`: shared epoll/kqueue event dispatch,
+  connection phases, proxy state, and generation-safe event tokens.
 - `rginx.toml`: the default configuration read by the executable.
 - `examples/config/`: minimal independent runtime configuration examples.
 - `.github/workflows/ci.yml`: formatting, Clippy, and workspace tests on Linux,
@@ -51,9 +53,9 @@ backpressure. Keep-alive, chunked request bodies, upstream pooling/TLS, and the
 - [ ] Add an `auto` runtime mode once capability probing and fallback exist.
 - [ ] Validate runtime-specific configuration at load time and reject invalid
   queue/buffer sizes with actionable errors.
-- [x] Use one listener per worker. Each child creates its own nonblocking socket
-  after `fork`, with `SO_REUSEADDR` and `SO_REUSEPORT`, and binds every configured
-  `listen` address. The kernel distributes new connections between workers.
+- [x] Use one listener per unique address in each worker. Every child creates
+  its own nonblocking sockets after `fork`, with `SO_REUSEADDR` and
+  `SO_REUSEPORT`. The kernel distributes new connections between workers.
 - [x] Implement the worker-side listener factory: create/bind/listen sockets
   after `fork`, set nonblocking mode, and return contextual errors for each
   address that cannot be opened.
@@ -94,8 +96,8 @@ backpressure. Keep-alive, chunked request bodies, upstream pooling/TLS, and the
 - [x] Add exact/prefix routing with exact-match priority and longest-prefix
   selection.
 - [x] Add SIGINT/SIGTERM master-to-worker shutdown and response draining.
-- [ ] Add structured logs, per-worker metrics, drain deadlines, and shutdown
-  reporting.
+- [x] Enforce a configurable graceful-shutdown drain deadline.
+- [ ] Add structured logs, per-worker metrics, and shutdown reporting.
 - [ ] Restart crashed workers with bounded backoff.
 - [ ] Build integration tests that run the same HTTP test suite against both
   runtime modes on their native platforms. Linux epoll runs in CI; macOS/BSD
@@ -171,6 +173,8 @@ backpressure. Keep-alive, chunked request bodies, upstream pooling/TLS, and the
   upstream URLs, and worker count.
 - [x] Add configurable connection limits, read/write buffer limits, idle
   timeout, and graceful-drain timeout.
+- [x] Add independent upstream connect, request-write, and response-read
+  timeouts. Pre-response failures return `504 Gateway Timeout`.
 - [ ] Add separate header/body limits, logging, TLS, and upstream pool settings.
 
 ## README/documentation TODOs
@@ -199,8 +203,8 @@ backpressure. Keep-alive, chunked request bodies, upstream pooling/TLS, and the
 
 ## Suggested delivery order
 
-1. Move DNS off the readiness loop and add explicit upstream connect/read/write
-   timeouts plus response-framing validation.
+1. Move DNS off the readiness loop and add upstream response-framing
+   validation.
 2. Expose validated request bodies to other actions, then add keep-alive and chunked
    request decoding.
 3. Add multi-worker `SO_REUSEPORT` and shutdown tests on Linux and macOS/BSD,

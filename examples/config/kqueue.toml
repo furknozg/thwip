@@ -8,6 +8,11 @@ max_write_buffer_size = 8388608
 idle_timeout_ms = 30000
 drain_timeout_ms = 10000
 
+[proxy]
+connect_timeout_ms = 3000
+write_timeout_ms = 30000
+read_timeout_ms = 30000
+
 [runtime]
 type = "kqueue"
 max_events = 2048
