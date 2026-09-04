@@ -389,10 +389,14 @@ impl IoUringWorker {
             self.connections.remove(slot);
             return Ok(());
         }
-        if connection.request_buffer.len() + received_len > self.limits.max_read_buffer_size {
+        if connection
+            .request_buffer
+            .len()
+            .checked_add(received_len)
+            .is_none_or(|length| length > self.limits.max_read_buffer_size)
+        {
             eprintln!("connection {slot} request exceeded the configured read limit");
-            self.connections.remove(slot);
-            return Ok(());
+            return self.queue_http_error(operation, 413, "request is too large");
         }
         connection
             .request_buffer
@@ -406,26 +410,26 @@ impl IoUringWorker {
                         Ok(length) => length,
                         Err(BodyFramingError::UnsupportedTransferEncoding) => {
                             eprintln!("connection {slot} used unsupported transfer encoding");
-                            self.connections.remove(slot);
-                            return Ok(());
+                            return self.queue_http_error(
+                                operation,
+                                501,
+                                "transfer encoding is not supported",
+                            );
                         }
                         Err(
                             BodyFramingError::InvalidContentLength
                             | BodyFramingError::ConflictingContentLength,
                         ) => {
                             eprintln!("connection {slot} sent an invalid content length");
-                            self.connections.remove(slot);
-                            return Ok(());
+                            return self.queue_http_error(operation, 400, "invalid content length");
                         }
                     };
                     let Some(body_end) = consumed.checked_add(body_length) else {
-                        self.connections.remove(slot);
-                        return Ok(());
+                        return self.queue_http_error(operation, 413, "request is too large");
                     };
                     if body_end > self.limits.max_read_buffer_size {
                         eprintln!("connection {slot} request body exceeded the configured limit");
-                        self.connections.remove(slot);
-                        return Ok(());
+                        return self.queue_http_error(operation, 413, "request is too large");
                     }
                     connection.pending_request = Some(PendingRequest {
                         head: request,
@@ -435,8 +439,7 @@ impl IoUringWorker {
                 }
                 Err(error) => {
                     eprintln!("connection {slot} sent an invalid HTTP request: {error}");
-                    self.connections.remove(slot);
-                    return Ok(());
+                    return self.queue_http_error(operation, 400, "invalid HTTP request");
                 }
             }
         }
@@ -461,6 +464,27 @@ impl IoUringWorker {
             slot: operation.slot,
             generation: operation.generation,
         })
+    }
+
+    fn queue_http_error(
+        &mut self,
+        operation: OperationId,
+        status: u16,
+        message: &str,
+    ) -> io::Result<()> {
+        let connection_id = ConnectionId {
+            slot: operation.slot,
+            generation: operation.generation,
+        };
+        let Some(connection) = self.connections.get_mut(operation.slot as usize) else {
+            return Ok(());
+        };
+        if !connection.matches_generation(operation.generation) {
+            return Ok(());
+        }
+        connection.pending_request = None;
+        connection.queue_response(response_bytes(status, message));
+        self.submit_send(connection_id)
     }
 
     fn prepare_response(&mut self, connection_id: ConnectionId) -> io::Result<()> {
