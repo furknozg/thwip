@@ -94,6 +94,8 @@ HTTP responses, including static files and streaming upstream proxies.
 - [x] Implement bounded nonblocking HTTP upstream proxying: forward validated
   request bodies, strip hop-by-hop headers, rewrite `Host`, stream responses
   with client backpressure, and return `502` on upstream failure.
+- [x] Support worker-local round-robin and weighted round-robin upstream groups
+  while retaining the single-upstream configuration form.
 - [x] Move DNS resolution off the worker loop and add generation-safe result
   delivery plus DNS/connect/write/read timeouts.
 - [ ] Add upstream response framing validation, pooling, retries, health checks,
@@ -211,7 +213,9 @@ HTTP responses, including static files and streaming upstream proxies.
 - [x] Resolve upstream hostnames on a configurable per-worker background pool,
   wake the readiness loop on completion, ignore stale generation-tagged
   results, and enforce a separate DNS timeout.
-- [ ] Add separate header/body limits, logging, TLS, and upstream pool settings.
+- [x] Add weighted upstream-group settings with positive-weight validation.
+- [ ] Add separate header/body limits, logging controls, TLS, and connection-pool
+  settings.
 
 ## README/documentation TODOs
 

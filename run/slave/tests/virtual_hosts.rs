@@ -1,6 +1,6 @@
 #![cfg(unix)]
 
-use proxy_common::{Action, Location, PathMatcher, Server};
+use proxy_common::{Action, BalancePolicy, Location, PathMatcher, Server, UpstreamEndpoint};
 #[cfg(target_os = "linux")]
 use slave::EpollRuntime;
 #[cfg(any(
@@ -204,7 +204,9 @@ fn streams_request_body_to_upstream_and_response_back_to_client() {
         &[(
             "proxy.test",
             Action::Proxy {
-                upstream: format!("http://{upstream_address}"),
+                upstream: Some(format!("http://{upstream_address}")),
+                upstreams: Vec::new(),
+                policy: BalancePolicy::default(),
             },
         )],
         WorkerLimits::default(),
@@ -230,6 +232,59 @@ fn streams_request_body_to_upstream_and_response_back_to_client() {
 }
 
 #[test]
+fn balances_proxy_requests_across_an_upstream_group() {
+    let first = TcpListener::bind("127.0.0.1:0").unwrap();
+    let second = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoints = [first.local_addr().unwrap(), second.local_addr().unwrap()];
+    let backends: Vec<_> = [first, second]
+        .into_iter()
+        .enumerate()
+        .map(|(index, listener)| {
+            thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut buffer).unwrap();
+                    assert_ne!(read, 0);
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                let body = format!("backend-{index}");
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            })
+        })
+        .collect();
+    let worker = start_worker_with_actions(
+        &[(
+            "balanced.test",
+            Action::Proxy {
+                upstream: None,
+                upstreams: endpoints
+                    .iter()
+                    .map(|address| UpstreamEndpoint {
+                        url: format!("http://{address}"),
+                        weight: 1,
+                    })
+                    .collect(),
+                policy: BalancePolicy::RoundRobin,
+            },
+        )],
+        WorkerLimits::default(),
+    );
+
+    assert!(request(worker.address, "balanced.test").ends_with("backend-0"));
+    assert!(request(worker.address, "balanced.test").ends_with("backend-1"));
+    for backend in backends {
+        backend.join().unwrap();
+    }
+}
+
+#[test]
 fn returns_bad_gateway_when_upstream_connect_fails() {
     let unavailable = TcpListener::bind("127.0.0.1:0").unwrap();
     let unavailable_address = unavailable.local_addr().unwrap();
@@ -238,7 +293,9 @@ fn returns_bad_gateway_when_upstream_connect_fails() {
         &[(
             "proxy.test",
             Action::Proxy {
-                upstream: format!("http://{unavailable_address}"),
+                upstream: Some(format!("http://{unavailable_address}")),
+                upstreams: Vec::new(),
+                policy: BalancePolicy::default(),
             },
         )],
         WorkerLimits::default(),
@@ -271,7 +328,9 @@ fn resolves_hostname_upstreams_on_the_background_pool() {
         &[(
             "proxy.test",
             Action::Proxy {
-                upstream: format!("http://localhost:{upstream_port}"),
+                upstream: Some(format!("http://localhost:{upstream_port}")),
+                upstreams: Vec::new(),
+                policy: BalancePolicy::default(),
             },
         )],
         WorkerLimits::default(),
@@ -304,7 +363,9 @@ fn returns_gateway_timeout_when_upstream_response_stalls() {
         &[(
             "proxy.test",
             Action::Proxy {
-                upstream: format!("http://{upstream_address}"),
+                upstream: Some(format!("http://{upstream_address}")),
+                upstreams: Vec::new(),
+                policy: BalancePolicy::default(),
             },
         )],
         WorkerLimits::default(),

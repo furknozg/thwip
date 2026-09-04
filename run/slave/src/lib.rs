@@ -14,6 +14,9 @@ pub use router::{response_bytes, response_bytes_with_body, route, select_server}
 
 mod proxy;
 
+mod load_balancer;
+pub use load_balancer::{BalanceError, UpstreamBalancer};
+
 mod static_files;
 pub use static_files::{
     parse_request_target, serve_static, static_error_response, static_response_bytes,

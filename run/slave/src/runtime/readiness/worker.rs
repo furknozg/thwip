@@ -7,6 +7,7 @@ use crate::proxy::Upstream;
 use crate::{
     parse_request_head, response_bytes, route, select_server, static_error_response,
     static_stream_response, BodyFramingError, RequestHead, RequestHeadParse, StaticChunk,
+    UpstreamBalancer,
 };
 #[cfg(unix)]
 use mio::{net::TcpListener, net::TcpStream, Events, Interest, Poll, Token, Waker};
@@ -53,6 +54,7 @@ struct ReadinessWorker {
     dns_limits: DnsLimits,
     resolver: DnsResolver,
     metrics: WorkerMetrics,
+    balancer: UpstreamBalancer,
     draining: bool,
     drain_started_at: Option<Instant>,
 }
@@ -153,6 +155,7 @@ impl ReadinessWorker {
             dns_limits,
             resolver,
             metrics,
+            balancer: UpstreamBalancer::default(),
             draining: false,
             drain_started_at: None,
         })
@@ -472,12 +475,20 @@ impl ReadinessWorker {
                 )?;
                 return Ok(());
             };
-            let proxy_upstream = match route(server, &request.target) {
-                Some(Action::Proxy { upstream }) => Some(upstream.clone()),
-                _ => None,
-            };
-            match proxy_upstream {
-                Some(upstream) => {
+            let action = route(server, &request.target).cloned();
+            match action {
+                Some(action @ Action::Proxy { .. }) => {
+                    let upstream = match self.balancer.select(&action) {
+                        Ok(upstream) => upstream,
+                        Err(error) => {
+                            eprintln!("invalid upstream group: {error}");
+                            self.queue_response(
+                                connection_id,
+                                response_bytes(502, "upstream configuration failed"),
+                            )?;
+                            return Ok(());
+                        }
+                    };
                     if let Err(error) =
                         self.start_proxy(connection_id, &upstream, &request, &request_body)
                     {
@@ -488,7 +499,7 @@ impl ReadinessWorker {
                         )?;
                     }
                 }
-                None => match route(server, &request.target) {
+                action => match action.as_ref() {
                     Some(Action::Static { directory }) => {
                         match static_stream_response(directory.as_ref(), &request) {
                             Ok(response) => self.queue_static_response(connection_id, response)?,

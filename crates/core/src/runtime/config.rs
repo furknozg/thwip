@@ -353,9 +353,57 @@ pub struct Location {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Action {
-    Proxy { upstream: String },
-    Static { directory: String },
-    Response { status: u16, body: String },
+    Proxy {
+        #[serde(default)]
+        upstream: Option<String>,
+        #[serde(default)]
+        upstreams: Vec<UpstreamEndpoint>,
+        #[serde(default)]
+        policy: BalancePolicy,
+    },
+    Static {
+        directory: String,
+    },
+    Response {
+        status: u16,
+        body: String,
+    },
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BalancePolicy {
+    RoundRobin,
+    #[default]
+    WeightedRoundRobin,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpstreamEndpoint {
+    pub url: String,
+    #[serde(
+        default = "default_upstream_weight",
+        deserialize_with = "deserialize_upstream_weight"
+    )]
+    pub weight: u32,
+}
+
+const fn default_upstream_weight() -> u32 {
+    1
+}
+
+fn deserialize_upstream_weight<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let weight = u32::deserialize(deserializer)?;
+    if weight == 0 {
+        Err(D::Error::custom(
+            "upstream weight must be greater than zero",
+        ))
+    } else {
+        Ok(weight)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -392,11 +440,46 @@ impl Default for Config {
 
 impl Config {
     pub fn from_toml(contents: &str) -> Result<Self, toml::de::Error> {
-        toml::from_str(contents)
+        let config: Self = toml::from_str(contents)?;
+        config.validate().map_err(toml::de::Error::custom)?;
+        Ok(config)
     }
 
     pub fn to_toml(&self) -> Result<String, toml::ser::Error> {
         toml::to_string_pretty(self)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        for server in &self.http.servers {
+            for location in &server.locations {
+                if let Action::Proxy {
+                    upstream,
+                    upstreams,
+                    ..
+                } = &location.action
+                {
+                    if upstream.is_some() == !upstreams.is_empty() {
+                        return Err(
+                            "proxy action must configure exactly one of upstream or upstreams"
+                                .to_owned(),
+                        );
+                    }
+                    if upstream.as_ref().is_some_and(|url| url.trim().is_empty())
+                        || upstreams
+                            .iter()
+                            .any(|endpoint| endpoint.url.trim().is_empty())
+                    {
+                        return Err("proxy upstream URL must not be empty".to_owned());
+                    }
+                    upstreams.iter().try_fold(0_u64, |total, endpoint| {
+                        total
+                            .checked_add(u64::from(endpoint.weight))
+                            .ok_or_else(|| "proxy upstream weights are too large".to_owned())
+                    })?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -411,7 +494,7 @@ pub enum ConfigError {
 
 pub fn read_config(path: impl AsRef<Path>) -> Result<Config, ConfigError> {
     let contents = fs::read_to_string(path)?;
-    Ok(toml::from_str(&contents)?)
+    Ok(Config::from_toml(&contents)?)
 }
 
 /// Compatibility alias for code using the previous configuration name.

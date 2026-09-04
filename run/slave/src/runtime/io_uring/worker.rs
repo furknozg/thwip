@@ -14,7 +14,8 @@ use crate::proxy::Upstream;
 use crate::{
     parse_request_head, response_bytes, route, select_server, static_error_response,
     static_stream_response, BodyFramingError, DnsLimits, ProxyLimits, RequestHead,
-    RequestHeadParse, ShutdownHandle, StaticChunk, WorkerContext, WorkerLimits, WorkerMetrics,
+    RequestHeadParse, ShutdownHandle, StaticChunk, UpstreamBalancer, WorkerContext, WorkerLimits,
+    WorkerMetrics,
 };
 use io_uring::{cqueue, opcode, squeue, types, IoUring};
 use proxy_common::Action;
@@ -52,6 +53,7 @@ pub struct IoUringWorker {
     timerfd: OwnedFd,
     timer_value: Box<u64>,
     metrics: WorkerMetrics,
+    balancer: UpstreamBalancer,
 }
 
 struct Completion {
@@ -120,6 +122,7 @@ impl IoUringWorker {
             timerfd,
             timer_value: Box::new(0),
             metrics: context.metrics,
+            balancer: UpstreamBalancer::default(),
         })
     }
 
@@ -573,7 +576,18 @@ impl IoUringWorker {
                     }
                 };
             }
-            Some(Action::Proxy { upstream }) => {
+            Some(action @ Action::Proxy { .. }) => {
+                let upstream = match self.balancer.select(&action) {
+                    Ok(upstream) => upstream,
+                    Err(error) => {
+                        eprintln!("invalid upstream group: {error}");
+                        return self.queue_proxy_error(
+                            connection_id,
+                            502,
+                            "upstream configuration failed",
+                        );
+                    }
+                };
                 return self.start_proxy(connection_id, &upstream, &request_head, &request_body);
             }
             None if self.servers.get(server_index).is_none() => {
