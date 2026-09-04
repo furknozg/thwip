@@ -8,6 +8,13 @@ pub(super) struct UringConnection {
     pub(super) listener_index: usize,
     pub(super) read_buffer: Box<[u8]>,
     pub(super) read_pending: bool,
+    pub(super) received_len: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ConnectionId {
+    pub(super) slot: u32,
+    pub(super) generation: u16,
 }
 
 impl UringConnection {
@@ -23,7 +30,28 @@ impl UringConnection {
             listener_index,
             read_buffer: vec![0; buffer_size].into_boxed_slice(),
             read_pending: false,
+            received_len: 0,
         }
+    }
+
+    pub(super) fn id(&self, slot: u32) -> ConnectionId {
+        ConnectionId {
+            slot,
+            generation: self.generation,
+        }
+    }
+
+    pub(super) fn matches_generation(&self, generation: u16) -> bool {
+        self.generation == generation
+    }
+
+    pub(super) fn mark_read_submitted(&mut self) {
+        self.read_pending = true;
+    }
+
+    pub(super) fn mark_read_completed(&mut self, received_len: usize) {
+        self.read_pending = false;
+        self.received_len = received_len;
     }
 }
 

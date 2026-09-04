@@ -1,16 +1,16 @@
 use super::{
-    connection::{next_generation, UringConnection},
+    connection::{next_generation, ConnectionId, UringConnection},
     listener::UringListener,
     operation::{OperationId, OperationKind},
     IoUringRuntime,
 };
 use crate::{DnsLimits, ProxyLimits, ShutdownHandle, WorkerContext, WorkerLimits};
-use io_uring::{cqueue, squeue, IoUring};
+use io_uring::{cqueue, opcode, squeue, types, IoUring};
 use proxy_common::Server;
 use slab::Slab;
 use std::{
     io,
-    os::fd::{FromRawFd, OwnedFd},
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
 };
 
 pub struct IoUringWorker {
@@ -99,10 +99,10 @@ impl IoUringWorker {
             OperationKind::Accept => {
                 self.handle_accept_completion(completion.operation, completion.result)
             }
-            OperationKind::Read | OperationKind::Write => {
-                // these are not submitted
-                Ok(())
+            OperationKind::Read => {
+                self.handle_read_completion(completion.operation, completion.result)
             }
+            OperationKind::Write => Ok(()),
         }
     }
 
@@ -120,8 +120,9 @@ impl IoUringWorker {
         listener.mark_accept_completed();
 
         if let Some(accepted) = accepted {
-            if let Err(error) = self.insert_connection(accepted, listener_idx) {
-                eprintln!("failed to retain accepted connection: {error}");
+            match self.insert_connection(accepted, listener_idx) {
+                Ok(connection_id) => self.submit_recv(connection_id)?,
+                Err(error) => eprintln!("failed to retain accepted connection: {error}"),
             }
         } else {
             let error = io::Error::from_raw_os_error(-result);
@@ -138,7 +139,7 @@ impl IoUringWorker {
         &mut self,
         socket: OwnedFd,
         listener_index: usize,
-    ) -> io::Result<OperationId> {
+    ) -> io::Result<ConnectionId> {
         if self.connections.len() >= self.limits.max_connections {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
@@ -159,14 +160,79 @@ impl IoUringWorker {
         }
         let generation = next_generation(self.generations[slot]);
         self.generations[slot] = generation;
-        entry.insert(UringConnection::new(
+        let connection = entry.insert(UringConnection::new(
             socket,
             generation,
             listener_index,
             self.buffer_size,
         ));
 
-        Ok(OperationId::read(operation_slot, generation))
+        Ok(connection.id(operation_slot))
+    }
+
+    fn submit_recv(&mut self, connection_id: ConnectionId) -> io::Result<()> {
+        let connection = self
+            .connections
+            .get_mut(connection_id.slot as usize)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "connection slot is unavailable",
+                )
+            })?;
+        if !connection.matches_generation(connection_id.generation) || connection.read_pending {
+            return Ok(());
+        }
+        let read_len = u32::try_from(connection.read_buffer.len()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "receive buffer exceeds io_uring length capacity",
+            )
+        })?;
+        let entry = opcode::Recv::new(
+            types::Fd(connection.socket.as_raw_fd()),
+            connection.read_buffer.as_mut_ptr(),
+            read_len,
+        )
+        .build()
+        .user_data(OperationId::read(connection_id.slot, connection_id.generation).encode());
+
+        unsafe { self.ring.submission().push(&entry) }.map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "io_uring submission queue is full",
+            )
+        })?;
+        connection.mark_read_submitted();
+        Ok(())
+    }
+
+    fn handle_read_completion(&mut self, operation: OperationId, result: i32) -> io::Result<()> {
+        let slot = operation.slot as usize;
+        let Some(connection) = self.connections.get_mut(slot) else {
+            return Ok(());
+        };
+        if !connection.matches_generation(operation.generation) {
+            return Ok(());
+        }
+
+        if result <= 0 {
+            if result < 0 {
+                let error = io::Error::from_raw_os_error(-result);
+                eprintln!("connection {slot} receive failed: {error}");
+            }
+            self.connections.remove(slot);
+            return Ok(());
+        }
+
+        let received_len = result as usize;
+        if received_len > connection.read_buffer.len() {
+            eprintln!("connection {slot} returned an invalid receive length");
+            self.connections.remove(slot);
+            return Ok(());
+        }
+        connection.mark_read_completed(received_len);
+        Ok(())
     }
 
     /// Submit initial operations and dispatch completions until shutdown.
