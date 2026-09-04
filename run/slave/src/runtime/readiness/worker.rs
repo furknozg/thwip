@@ -898,10 +898,10 @@ impl ReadinessWorker {
                 return self.reregister_client(connection_id, Interest::READABLE);
             }
             for _ in 0..MAX_WRITES_PER_EVENT {
-                if connection.write_offset == connection.write_buffer.len() {
-                    if connection.ssl.is_none() || !connection.ssl_wants_write() {
-                        break;
-                    }
+                if connection.write_offset == connection.write_buffer.len()
+                    && (connection.ssl.is_none() || !connection.ssl_wants_write())
+                {
+                    break;
                 }
                 let writing_application = connection.write_offset < connection.write_buffer.len();
                 let write_result: io::Result<usize> = if let Some(ssl) = &mut connection.ssl {
@@ -1011,17 +1011,13 @@ impl ReadinessWorker {
         }
         let send_close_notify = {
             let connection = &mut self.connections[connection_id.slot];
-            if connection.ssl.is_some() && !connection.ssl_closing {
-                connection
-                    .ssl
-                    .as_mut()
-                    .unwrap()
-                    .connection
-                    .send_close_notify();
-                connection.ssl_closing = true;
-                true
-            } else {
-                false
+            match connection.ssl.as_mut() {
+                Some(ssl) if !connection.ssl_closing => {
+                    ssl.connection.send_close_notify();
+                    connection.ssl_closing = true;
+                    true
+                }
+                _ => false,
             }
         };
         if send_close_notify {
