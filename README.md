@@ -102,7 +102,8 @@ HTTP responses, including static files and streaming upstream proxies.
 - [x] Add SIGINT/SIGTERM master-to-worker shutdown and response draining.
 - [x] Enforce a configurable graceful-shutdown drain deadline.
 - [ ] Add structured logs, per-worker metrics, and shutdown reporting.
-- [ ] Restart crashed workers with bounded backoff.
+- [x] Restart crashed workers with exponential backoff capped at ten seconds;
+  reset the failure sequence after a stable run.
 - [ ] Build integration tests that run the same HTTP test suite against both
   runtime modes on their native platforms. Linux epoll runs in CI; macOS/BSD
   kqueue coverage is currently local.

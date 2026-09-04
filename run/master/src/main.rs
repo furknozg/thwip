@@ -6,8 +6,20 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
+
+const RESTART_BASE_DELAY: Duration = Duration::from_millis(100);
+const RESTART_MAX_DELAY: Duration = Duration::from_secs(10);
+const RESTART_STABLE_WINDOW: Duration = Duration::from_secs(30);
+
+struct WorkerSlot {
+    cpu_id: usize,
+    pid: Option<nix::unistd::Pid>,
+    failures: u32,
+    started_at: Instant,
+    restart_at: Option<Instant>,
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config_path = Path::new("rginx.toml");
@@ -66,41 +78,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //  (Fork) Yönetimi
     let mut workers = Vec::with_capacity(total_workers);
     for cpu_id in 0..total_workers {
-        // config'i child process'e güvenli şekilde klonlayarak taşıyoruz
-        let worker_config = config.clone();
-
-        match unsafe { nix::unistd::fork() } {
-            Ok(nix::unistd::ForkResult::Parent { child }) => {
-                println!("[Parent] Worker #{} (PID: {}) fork edildi.", cpu_id, child);
-                workers.push(child);
-            }
-            Ok(nix::unistd::ForkResult::Child) => {
-                // Okuduğumuz 'worker_config' ve 'cpu_id'yi işçi fonksiyona paslıyoruz.
-                run_child_worker(cpu_id, worker_config);
-                std::process::exit(0);
-            }
-            Err(err) => panic!("Fork başarısız oldu: {}", err),
-        }
+        let pid = spawn_worker(cpu_id, &config)?;
+        workers.push(WorkerSlot {
+            cpu_id,
+            pid: Some(pid),
+            failures: 0,
+            started_at: Instant::now(),
+            restart_at: None,
+        });
     }
 
-    supervise_workers(workers, shutdown_requested)
+    supervise_workers(workers, shutdown_requested, &config)
 }
 
 fn supervise_workers(
-    workers: Vec<nix::unistd::Pid>,
+    mut workers: Vec<WorkerSlot>,
     shutdown_requested: Arc<AtomicBool>,
+    config: &Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut remaining = workers.len();
     let mut stopping = false;
 
-    while remaining > 0 {
+    loop {
         if shutdown_requested.load(Ordering::Acquire) && !stopping {
             stopping = true;
             println!("[Parent] Shutdown requested; draining workers...");
-            for worker in &workers {
-                if let Err(error) =
-                    nix::sys::signal::kill(*worker, nix::sys::signal::Signal::SIGTERM)
-                {
+            for pid in workers.iter().filter_map(|worker| worker.pid) {
+                if let Err(error) = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM) {
                     if error != nix::errno::Errno::ESRCH {
                         return Err(error.into());
                     }
@@ -113,19 +116,109 @@ fn supervise_workers(
                 std::thread::sleep(Duration::from_millis(50));
             }
             Ok(status) => {
-                remaining = remaining.saturating_sub(1);
                 println!("[Parent] Worker exited: {:?}", status);
+                let Some(pid) = status_pid(status) else {
+                    continue;
+                };
+                let Some(worker) = workers.iter_mut().find(|worker| worker.pid == Some(pid)) else {
+                    continue;
+                };
+                worker.pid = None;
+                if !stopping && status_failed(status) {
+                    if worker.started_at.elapsed() >= RESTART_STABLE_WINDOW {
+                        worker.failures = 0;
+                    }
+                    worker.failures = worker.failures.saturating_add(1);
+                    let delay = restart_delay(worker.failures);
+                    worker.restart_at = Some(Instant::now() + delay);
+                    eprintln!(
+                        "[Parent] Worker #{} crashed; restarting in {} ms (failure #{})",
+                        worker.cpu_id,
+                        delay.as_millis(),
+                        worker.failures
+                    );
+                }
             }
-            Err(nix::errno::Errno::ECHILD) => break,
+            Err(nix::errno::Errno::ECHILD) => {}
             Err(error) => return Err(error.into()),
         }
-    }
 
-    Ok(())
+        if stopping && workers.iter().all(|worker| worker.pid.is_none()) {
+            return Ok(());
+        }
+
+        if !stopping {
+            for worker in workers.iter_mut().filter(|worker| {
+                worker.pid.is_none()
+                    && worker
+                        .restart_at
+                        .is_some_and(|restart_at| Instant::now() >= restart_at)
+            }) {
+                let pid = spawn_worker(worker.cpu_id, config)?;
+                worker.pid = Some(pid);
+                worker.started_at = Instant::now();
+                worker.restart_at = None;
+            }
+            if workers
+                .iter()
+                .all(|worker| worker.pid.is_none() && worker.restart_at.is_none())
+            {
+                return Ok(());
+            }
+        }
+    }
 }
 
-fn run_child_worker(cpu_id: usize, config: Config) {
+fn spawn_worker(
+    cpu_id: usize,
+    config: &Config,
+) -> Result<nix::unistd::Pid, Box<dyn std::error::Error>> {
+    let worker_config = config.clone();
+    match unsafe { nix::unistd::fork() }? {
+        nix::unistd::ForkResult::Parent { child } => {
+            println!("[Parent] Worker #{} started (PID: {})", cpu_id, child);
+            Ok(child)
+        }
+        nix::unistd::ForkResult::Child => run_child_worker(cpu_id, worker_config),
+    }
+}
+
+fn run_child_worker(cpu_id: usize, config: Config) -> ! {
     if let Err(error) = slave::start_worker(cpu_id, &config) {
         eprintln!("[Worker {}] failed to start: {}", cpu_id, error);
+        std::process::exit(1);
+    }
+    std::process::exit(0);
+}
+
+fn status_pid(status: nix::sys::wait::WaitStatus) -> Option<nix::unistd::Pid> {
+    use nix::sys::wait::WaitStatus;
+    match status {
+        WaitStatus::Exited(pid, _) | WaitStatus::Signaled(pid, _, _) => Some(pid),
+        _ => None,
+    }
+}
+
+fn status_failed(status: nix::sys::wait::WaitStatus) -> bool {
+    !matches!(status, nix::sys::wait::WaitStatus::Exited(_, 0))
+}
+
+fn restart_delay(failures: u32) -> Duration {
+    let exponent = failures.saturating_sub(1).min(16);
+    RESTART_BASE_DELAY
+        .saturating_mul(1_u32 << exponent)
+        .min(RESTART_MAX_DELAY)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restart_backoff_grows_and_is_bounded() {
+        assert_eq!(restart_delay(1), Duration::from_millis(100));
+        assert_eq!(restart_delay(2), Duration::from_millis(200));
+        assert_eq!(restart_delay(3), Duration::from_millis(400));
+        assert_eq!(restart_delay(100), RESTART_MAX_DELAY);
     }
 }
