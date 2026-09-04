@@ -17,6 +17,7 @@ use slab::Slab;
 use std::{
     io,
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
+    sync::Arc,
 };
 
 pub struct IoUringWorker {
@@ -30,6 +31,11 @@ pub struct IoUringWorker {
     limits: WorkerLimits,
     proxy_limits: ProxyLimits,
     dns_limits: DnsLimits,
+    shutdown_eventfd: Arc<OwnedFd>,
+    shutdown_value: Box<u64>,
+    shutting_down: bool,
+    cancellation_started: bool,
+    pending_cancellations: usize,
 }
 
 struct Completion {
@@ -56,6 +62,10 @@ impl IoUringWorker {
                 )
             })
             .collect();
+        let shutdown_eventfd = Arc::new(create_eventfd()?);
+        context
+            .shutdown
+            .install_eventfd(Arc::clone(&shutdown_eventfd));
 
         Ok(Self {
             ring,
@@ -68,6 +78,11 @@ impl IoUringWorker {
             limits: context.limits,
             proxy_limits: context.proxy_limits,
             dns_limits: context.dns_limits,
+            shutdown_eventfd,
+            shutdown_value: Box::new(0),
+            shutting_down: false,
+            cancellation_started: false,
+            pending_cancellations: 0,
         })
     }
 
@@ -128,9 +143,11 @@ impl IoUringWorker {
         listener.mark_accept_completed();
 
         if let Some(accepted) = accepted {
-            match self.insert_connection(accepted, listener_idx) {
-                Ok(connection_id) => self.submit_recv(connection_id)?,
-                Err(error) => eprintln!("failed to retain accepted connection: {error}"),
+            if !self.shutting_down {
+                match self.insert_connection(accepted, listener_idx) {
+                    Ok(connection_id) => self.submit_recv(connection_id)?,
+                    Err(error) => eprintln!("failed to retain accepted connection: {error}"),
+                }
             }
         } else {
             let error = io::Error::from_raw_os_error(-result);
@@ -191,6 +208,10 @@ impl IoUringWorker {
             return Ok(());
         }
         connection.mark_write_completed();
+        if self.shutting_down {
+            self.connections.remove(slot);
+            return Ok(());
+        }
 
         if result < 0 {
             let error = io::Error::from_raw_os_error(-result);
@@ -325,6 +346,10 @@ impl IoUringWorker {
             return Ok(());
         }
         connection.mark_read_completed();
+        if self.shutting_down {
+            self.connections.remove(slot);
+            return Ok(());
+        }
         if connection.request_buffer.len() + received_len > self.limits.max_read_buffer_size {
             eprintln!("connection {slot} request exceeded the configured read limit");
             self.connections.remove(slot);
@@ -441,6 +466,78 @@ impl IoUringWorker {
         self.submit_send(connection_id)
     }
 
+    fn submit_shutdown_read(&mut self) -> io::Result<()> {
+        let entry = opcode::Read::new(
+            types::Fd(self.shutdown_eventfd.as_raw_fd()),
+            (&mut *self.shutdown_value as *mut u64).cast(),
+            std::mem::size_of::<u64>() as u32,
+        )
+        .build()
+        .user_data(super::operation::CONTROL_USER_DATA);
+        unsafe { self.ring.submission().push(&entry) }.map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "io_uring submission queue is full",
+            )
+        })?;
+        Ok(())
+    }
+
+    fn begin_shutdown(&mut self) -> io::Result<()> {
+        if self.cancellation_started {
+            return Ok(());
+        }
+        self.shutting_down = true;
+        self.cancellation_started = true;
+
+        let mut targets = Vec::new();
+        for (index, listener) in self.listeners.iter().enumerate() {
+            if listener.accept_pending() {
+                targets.push(listener.accept_operation(index)?.encode());
+            }
+        }
+        let mut idle_connections = Vec::new();
+        for (slot, connection) in &self.connections {
+            let operation_slot = u32::try_from(slot).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "connection slot is too large")
+            })?;
+            if connection.read_pending {
+                targets.push(OperationId::read(operation_slot, connection.generation).encode());
+            } else if connection.write_pending {
+                targets.push(OperationId::write(operation_slot, connection.generation).encode());
+            } else {
+                idle_connections.push(slot);
+            }
+        }
+        for slot in idle_connections {
+            self.connections.remove(slot);
+        }
+
+        self.pending_cancellations = targets.len();
+        for target in targets {
+            let entry = opcode::AsyncCancel::new(target)
+                .build()
+                .user_data(super::operation::CANCEL_USER_DATA);
+            loop {
+                if unsafe { self.ring.submission().push(&entry) }.is_ok() {
+                    break;
+                }
+                self.ring.submit()?;
+            }
+        }
+        self.ring.submit()?;
+        Ok(())
+    }
+
+    fn shutdown_drained(&self) -> bool {
+        self.pending_cancellations == 0
+            && self
+                .listeners
+                .iter()
+                .all(|listener| !listener.accept_pending())
+            && self.connections.is_empty()
+    }
+
     /// Submit initial operations and dispatch completions until shutdown.
     pub(super) fn run(mut self) -> io::Result<()> {
         let _owned_resources = (
@@ -455,26 +552,48 @@ impl IoUringWorker {
             &self.dns_limits,
         );
         self.submit_initial_accepts()?;
+        self.submit_shutdown_read()?;
+        self.ring.submit()?;
 
-        while !self.shutdown.is_requested() {
+        loop {
+            if self.shutdown.is_requested() {
+                self.begin_shutdown()?;
+            }
+            if self.shutting_down && self.shutdown_drained() {
+                return Ok(());
+            }
             self.ring.submit_and_wait(1)?;
-            // drain completion queue entries here
-            let completions: Vec<Completion> = self
+            let completions: Vec<(u64, i32)> = self
                 .ring
                 .completion()
-                .filter_map(|cqe| {
-                    OperationId::decode(cqe.user_data()).map(|operation| Completion {
-                        operation,
-                        result: cqe.result(),
-                    })
-                })
+                .map(|cqe| (cqe.user_data(), cqe.result()))
                 .collect();
 
-            for completion in completions {
-                self.dispatch_completion(completion)?;
+            for (user_data, result) in completions {
+                if user_data == super::operation::CONTROL_USER_DATA {
+                    self.shutdown.request();
+                    continue;
+                }
+                if user_data == super::operation::CANCEL_USER_DATA {
+                    self.pending_cancellations = self.pending_cancellations.saturating_sub(1);
+                    continue;
+                }
+                let Some(operation) = OperationId::decode(user_data) else {
+                    eprintln!("ignoring invalid io_uring completion identifier {user_data}");
+                    continue;
+                };
+                self.dispatch_completion(Completion { operation, result })?;
             }
             self.ring.submit()?;
         }
-        Ok(())
+    }
+}
+
+fn create_eventfd() -> io::Result<OwnedFd> {
+    let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+    if fd < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
     }
 }

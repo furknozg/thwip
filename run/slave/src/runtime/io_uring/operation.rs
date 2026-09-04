@@ -16,6 +16,7 @@ pub(super) struct OperationId {
 }
 
 pub const CONTROL_USER_DATA: u64 = 0;
+pub const CANCEL_USER_DATA: u64 = u64::MAX;
 
 impl OperationId {
     /// Encode this operation into the `user_data` field carried by an SQE/CQE.

@@ -1,5 +1,7 @@
 use crate::BoundListenerGroup;
 use proxy_common::{DnsConfig, ProxyTimeoutConfig, Server, WorkerConfig};
+#[cfg(target_os = "linux")]
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::{
     io,
     sync::{
@@ -14,6 +16,8 @@ struct ShutdownState {
     requested: Arc<AtomicBool>,
     #[cfg(unix)]
     waker: Mutex<Option<Arc<mio::Waker>>>,
+    #[cfg(target_os = "linux")]
+    eventfd: Mutex<Option<Arc<OwnedFd>>>,
 }
 
 #[derive(Clone, Default)]
@@ -31,6 +35,19 @@ impl ShutdownHandle {
                 let _ = waker.wake();
             }
         }
+        #[cfg(target_os = "linux")]
+        if let Ok(eventfd) = self.0.eventfd.lock() {
+            if let Some(eventfd) = eventfd.as_ref() {
+                let value = 1_u64;
+                unsafe {
+                    libc::write(
+                        eventfd.as_raw_fd(),
+                        (&value as *const u64).cast(),
+                        std::mem::size_of::<u64>(),
+                    );
+                }
+            }
+        }
     }
     pub fn flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.0.requested)
@@ -43,6 +60,16 @@ impl ShutdownHandle {
     pub(crate) fn install_waker(&self, waker: Arc<mio::Waker>) {
         if let Ok(mut installed) = self.0.waker.lock() {
             *installed = Some(waker);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn install_eventfd(&self, eventfd: Arc<OwnedFd>) {
+        if let Ok(mut installed) = self.0.eventfd.lock() {
+            *installed = Some(eventfd);
+        }
+        if self.is_requested() {
+            self.request();
         }
     }
 }

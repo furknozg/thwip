@@ -65,4 +65,14 @@ impl UringListener {
     pub(super) fn matches_generation(&self, generation: u16) -> bool {
         self.generation == generation
     }
+
+    pub(super) fn accept_operation(&self, listener_index: usize) -> io::Result<OperationId> {
+        let slot = u32::try_from(listener_index).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "listener index exceeds io_uring operation capacity",
+            )
+        })?;
+        Ok(OperationId::accept(slot, self.generation))
+    }
 }
