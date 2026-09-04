@@ -1,6 +1,20 @@
-use crate::{RequestHead, StaticStream};
+use crate::{LoadedSslConfig, RequestHead, StaticStream};
 use socket2::SockAddr;
-use std::{collections::VecDeque, net::SocketAddr, os::fd::OwnedFd, time::Instant};
+use std::{
+    collections::VecDeque,
+    io,
+    net::SocketAddr,
+    os::fd::OwnedFd,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+pub(super) struct UringSslSession {
+    pub(super) connection: rustls::ServerConnection,
+    pub(super) started_at: Instant,
+    pub(super) handshake_timeout: Duration,
+    pub(super) closing: bool,
+}
 
 pub(super) struct UringConnection {
     pub(super) socket: OwnedFd,
@@ -13,8 +27,11 @@ pub(super) struct UringConnection {
     pub(super) write_buffer: Vec<u8>,
     pub(super) write_offset: usize,
     pub(super) write_pending: bool,
+    pub(super) ssl_write_buffer: Vec<u8>,
+    pub(super) ssl_write_offset: usize,
     pub(super) proxy: Option<UringProxy>,
     pub(super) static_stream: Option<StaticStream>,
+    pub(super) ssl: Option<UringSslSession>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,8 +116,27 @@ impl UringConnection {
         generation: u16,
         listener_index: usize,
         buffer_size: usize,
-    ) -> Self {
-        Self {
+        ssl: Option<&LoadedSslConfig>,
+    ) -> io::Result<Self> {
+        let ssl = ssl
+            .map(|config| {
+                rustls::ServerConnection::new(Arc::clone(&config.server_config)).map(|connection| {
+                    UringSslSession {
+                        connection,
+                        started_at: Instant::now(),
+                        handshake_timeout: config.handshake_timeout,
+                        closing: false,
+                    }
+                })
+            })
+            .transpose()
+            .map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("failed to create SSL session: {error}"),
+                )
+            })?;
+        Ok(Self {
             socket,
             generation,
             listener_index,
@@ -111,9 +147,12 @@ impl UringConnection {
             write_buffer: Vec::new(),
             write_offset: 0,
             write_pending: false,
+            ssl_write_buffer: Vec::new(),
+            ssl_write_offset: 0,
             proxy: None,
             static_stream: None,
-        }
+            ssl,
+        })
     }
 
     pub(super) fn id(&self, slot: u32) -> ConnectionId {

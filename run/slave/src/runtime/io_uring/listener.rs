@@ -1,3 +1,4 @@
+use crate::LoadedSslConfig;
 use std::{
     io,
     os::fd::{AsRawFd, OwnedFd},
@@ -14,6 +15,7 @@ pub(super) struct UringListener {
     pub(super) default_server: usize,
     #[allow(dead_code)] // Used when accepted connections begin HTTP routing.
     pub(super) server_indices: Vec<usize>,
+    pub(super) ssl: Option<LoadedSslConfig>,
     generation: u16,
     accept_mode: AcceptMode,
     accept_pending: bool,
@@ -30,12 +32,14 @@ impl UringListener {
         socket: OwnedFd,
         default_server: usize,
         server_indices: Vec<usize>,
+        ssl: Option<LoadedSslConfig>,
         accept_mode: AcceptMode,
     ) -> Self {
         Self {
             socket,
             default_server,
             server_indices,
+            ssl,
             generation: 1,
             accept_mode,
             accept_pending: false,

@@ -24,6 +24,7 @@ use slab::Slab;
 use socket2::SockAddr;
 use std::{
     io,
+    io::{Cursor, Read, Write},
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
     sync::Arc,
 };
@@ -75,14 +76,26 @@ impl IoUringWorker {
         let buffer_ring =
             ProvidedBufferRing::register(&ring, runtime.buf_ring_size, runtime.buf_size)?;
 
+        if context.ssl_configs.len() != context.servers.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "SSL configuration does not match the configured servers",
+            ));
+        }
         let listeners = context
             .listener_groups
             .into_iter()
             .map(|group| {
+                let ssl = context
+                    .ssl_configs
+                    .get(group.default_server)
+                    .cloned()
+                    .flatten();
                 UringListener::new(
                     group.socket.into(),
                     group.default_server,
                     group.server_indices,
+                    ssl,
                     AcceptMode::Multishot,
                 )
             })
@@ -240,7 +253,28 @@ impl IoUringWorker {
         if !connection.matches_generation(connection_id.generation) || connection.write_pending {
             return Ok(());
         }
-        let remaining = &connection.write_buffer[connection.write_offset..];
+        let remaining = if let Some(ssl) = &mut connection.ssl {
+            if connection.ssl_write_offset == connection.ssl_write_buffer.len() {
+                connection.ssl_write_buffer.clear();
+                connection.ssl_write_offset = 0;
+                if connection.write_offset < connection.write_buffer.len() {
+                    let written = ssl
+                        .connection
+                        .writer()
+                        .write(&connection.write_buffer[connection.write_offset..])?;
+                    connection.write_offset += written;
+                }
+                if ssl.connection.wants_write() {
+                    ssl.connection.write_tls(&mut connection.ssl_write_buffer)?;
+                }
+            }
+            &connection.ssl_write_buffer[connection.ssl_write_offset..]
+        } else {
+            &connection.write_buffer[connection.write_offset..]
+        };
+        if remaining.is_empty() {
+            return Ok(());
+        }
         let write_len = u32::try_from(remaining.len()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -289,14 +323,30 @@ impl IoUringWorker {
 
         let written = result as usize;
         self.metrics.wrote_bytes(written);
-        let remaining = connection.write_buffer.len() - connection.write_offset;
+        let remaining = if connection.ssl.is_some() {
+            connection.ssl_write_buffer.len() - connection.ssl_write_offset
+        } else {
+            connection.write_buffer.len() - connection.write_offset
+        };
         if written > remaining {
             eprintln!("connection {slot} returned an invalid send length");
             self.connections.remove(slot);
             return Ok(());
         }
-        connection.write_offset += written;
-        if connection.write_offset == connection.write_buffer.len() {
+        if connection.ssl.is_some() {
+            connection.ssl_write_offset += written;
+        } else {
+            connection.write_offset += written;
+        }
+        let output_drained = connection.ssl.as_ref().map_or(
+            connection.write_offset == connection.write_buffer.len(),
+            |ssl| {
+                connection.ssl_write_offset == connection.ssl_write_buffer.len()
+                    && connection.write_offset == connection.write_buffer.len()
+                    && !ssl.connection.wants_write()
+            },
+        );
+        if output_drained {
             if connection.static_stream.is_some() {
                 connection.write_buffer.clear();
                 connection.write_offset = 0;
@@ -313,6 +363,16 @@ impl IoUringWorker {
                     slot: operation.slot,
                     generation: operation.generation,
                 });
+            }
+            if let Some(ssl) = connection.ssl.as_mut() {
+                if !ssl.closing {
+                    ssl.connection.send_close_notify();
+                    ssl.closing = true;
+                    return self.submit_send(ConnectionId {
+                        slot: operation.slot,
+                        generation: operation.generation,
+                    });
+                }
             }
             self.metrics.response();
             self.connections.remove(slot);
@@ -350,12 +410,14 @@ impl IoUringWorker {
         }
         let generation = next_generation(self.generations[slot]);
         self.generations[slot] = generation;
+        let ssl = self.listeners[listener_index].ssl.as_ref();
         let connection = entry.insert(UringConnection::new(
             socket,
             generation,
             listener_index,
             self.buffer_size,
-        ));
+            ssl,
+        )?);
 
         Ok(connection.id(operation_slot))
     }
@@ -437,6 +499,42 @@ impl IoUringWorker {
         }
 
         let received = received.unwrap();
+        let received = if let Some(ssl) = &mut connection.ssl {
+            let mut encrypted = Cursor::new(received);
+            if let Err(error) = ssl.connection.read_tls(&mut encrypted) {
+                eprintln!("connection {slot} SSL receive failed: {error}");
+                self.connections.remove(slot);
+                return Ok(());
+            }
+            if let Err(error) = ssl.connection.process_new_packets() {
+                eprintln!("connection {slot} SSL handshake failed: {error}");
+                self.connections.remove(slot);
+                return Ok(());
+            }
+            let mut plaintext = Vec::new();
+            if let Err(error) = ssl.connection.reader().read_to_end(&mut plaintext) {
+                if error.kind() != io::ErrorKind::WouldBlock {
+                    eprintln!("connection {slot} SSL plaintext read failed: {error}");
+                    self.connections.remove(slot);
+                    return Ok(());
+                }
+            }
+            if ssl.connection.wants_write() {
+                self.submit_send(ConnectionId {
+                    slot: operation.slot,
+                    generation: operation.generation,
+                })?;
+            }
+            plaintext
+        } else {
+            received
+        };
+        if received.is_empty() {
+            return self.submit_recv(ConnectionId {
+                slot: operation.slot,
+                generation: operation.generation,
+            });
+        }
         let received_len = received.len();
         self.metrics.read_bytes(received_len);
         if connection
@@ -1022,6 +1120,27 @@ impl IoUringWorker {
                 .build()
                 .user_data(super::operation::PROXY_CANCEL_USER_DATA);
             push_entry(&mut self.ring, &entry)?;
+        }
+        let handshake_expired: Vec<ConnectionId> = self
+            .connections
+            .iter()
+            .filter_map(|(slot, connection)| {
+                connection.ssl.as_ref().and_then(|ssl| {
+                    (ssl.connection.is_handshaking()
+                        && now.duration_since(ssl.started_at) >= ssl.handshake_timeout)
+                        .then_some(ConnectionId {
+                            slot: slot as u32,
+                            generation: connection.generation,
+                        })
+                })
+            })
+            .collect();
+        for connection_id in handshake_expired {
+            eprintln!(
+                "SSL handshake timed out for connection {}",
+                connection_id.slot
+            );
+            self.connections.remove(connection_id.slot as usize);
         }
         // The periodic timer also wakes a draining worker so its graceful
         // shutdown deadline is enforced even when clients are otherwise idle.
