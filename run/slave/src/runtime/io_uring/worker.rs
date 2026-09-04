@@ -116,12 +116,7 @@ impl IoUringWorker {
         }
         let entry = listener.accept_entry(listener_idx)?;
 
-        unsafe { self.ring.submission().push(&entry) }.map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "io_uring submission queue is full",
-            )
-        })?;
+        push_entry(&mut self.ring, &entry)?;
 
         self.listeners[listener_idx].mark_accept_submitted();
         Ok(())
@@ -219,12 +214,7 @@ impl IoUringWorker {
         .build()
         .user_data(OperationId::write(connection_id.slot, connection_id.generation).encode());
 
-        unsafe { self.ring.submission().push(&entry) }.map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "io_uring submission queue is full",
-            )
-        })?;
+        push_entry(&mut self.ring, &entry)?;
         connection.mark_write_submitted();
         Ok(())
     }
@@ -350,12 +340,7 @@ impl IoUringWorker {
         .build()
         .user_data(OperationId::read(connection_id.slot, connection_id.generation).encode());
 
-        unsafe { self.ring.submission().push(&entry) }.map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "io_uring submission queue is full",
-            )
-        })?;
+        push_entry(&mut self.ring, &entry)?;
         connection.mark_read_submitted();
         Ok(())
     }
@@ -576,12 +561,7 @@ impl IoUringWorker {
         )
         .build()
         .user_data(super::operation::DNS_USER_DATA);
-        unsafe { self.ring.submission().push(&entry) }.map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "io_uring submission queue is full",
-            )
-        })?;
+        push_entry(&mut self.ring, &entry)?;
         Ok(())
     }
 
@@ -656,12 +636,7 @@ impl IoUringWorker {
         .user_data(
             OperationId::proxy_connect(connection_id.slot, connection_id.generation).encode(),
         );
-        unsafe { self.ring.submission().push(&entry) }.map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "io_uring submission queue is full",
-            )
-        })?;
+        push_entry(&mut self.ring, &entry)?;
         proxy.operation_pending = true;
         Ok(())
     }
@@ -683,12 +658,7 @@ impl IoUringWorker {
         .flags(libc::MSG_NOSIGNAL)
         .build()
         .user_data(OperationId::proxy_write(connection_id.slot, connection_id.generation).encode());
-        unsafe { self.ring.submission().push(&entry) }.map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "io_uring submission queue is full",
-            )
-        })?;
+        push_entry(&mut self.ring, &entry)?;
         proxy.operation_pending = true;
         Ok(())
     }
@@ -711,12 +681,7 @@ impl IoUringWorker {
         )
         .build()
         .user_data(OperationId::proxy_read(connection_id.slot, connection_id.generation).encode());
-        unsafe { self.ring.submission().push(&entry) }.map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "io_uring submission queue is full",
-            )
-        })?;
+        push_entry(&mut self.ring, &entry)?;
         proxy.operation_pending = true;
         Ok(())
     }
@@ -880,12 +845,7 @@ impl IoUringWorker {
         )
         .build()
         .user_data(super::operation::CONTROL_USER_DATA);
-        unsafe { self.ring.submission().push(&entry) }.map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "io_uring submission queue is full",
-            )
-        })?;
+        push_entry(&mut self.ring, &entry)?;
         Ok(())
     }
 
@@ -897,12 +857,7 @@ impl IoUringWorker {
         )
         .build()
         .user_data(super::operation::TIMER_USER_DATA);
-        unsafe { self.ring.submission().push(&entry) }.map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "io_uring submission queue is full",
-            )
-        })?;
+        push_entry(&mut self.ring, &entry)?;
         Ok(())
     }
 
@@ -961,12 +916,7 @@ impl IoUringWorker {
             let entry = opcode::AsyncCancel::new(target.encode())
                 .build()
                 .user_data(super::operation::PROXY_CANCEL_USER_DATA);
-            unsafe { self.ring.submission().push(&entry) }.map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "io_uring submission queue is full",
-                )
-            })?;
+            push_entry(&mut self.ring, &entry)?;
         }
         if !self.shutting_down {
             self.submit_timer_read()?;
@@ -1032,12 +982,7 @@ impl IoUringWorker {
             let entry = opcode::AsyncCancel::new(target)
                 .build()
                 .user_data(super::operation::CANCEL_USER_DATA);
-            loop {
-                if unsafe { self.ring.submission().push(&entry) }.is_ok() {
-                    break;
-                }
-                self.ring.submit()?;
-            }
+            push_entry(&mut self.ring, &entry)?;
         }
         self.ring.submit()?;
         Ok(())
@@ -1113,6 +1058,21 @@ impl IoUringWorker {
             }
             self.ring.submit()?;
         }
+    }
+}
+
+/// Queue an operation without treating temporary SQ exhaustion as a worker
+/// failure. Submitting the current batch advances the shared SQ head, after
+/// which the same entry can be scheduled safely.
+fn push_entry(
+    ring: &mut IoUring<squeue::Entry, cqueue::Entry>,
+    entry: &squeue::Entry,
+) -> io::Result<()> {
+    loop {
+        if unsafe { ring.submission().push(entry) }.is_ok() {
+            return Ok(());
+        }
+        ring.submit()?;
     }
 }
 
