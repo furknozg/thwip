@@ -1,4 +1,21 @@
 (() => {
+  const installSiteIcons = () => {
+    const icons = [
+      ["icon", "/favicon.png?v=1", "1254x1254"],
+      ["icon", "/favicon-32x32.png?v=1", "32x32"],
+      ["apple-touch-icon", "/apple-touch-icon.png?v=1", "180x180"],
+      ["manifest", "/site.webmanifest?v=1", null],
+    ];
+    icons.forEach(([rel, href, sizes]) => {
+      const link = document.createElement("link");
+      link.rel = rel;
+      link.href = href;
+      if (sizes) link.sizes = sizes;
+      if (rel === "icon") link.type = "image/png";
+      document.head.append(link);
+    });
+  };
+
   const escapeHtml = (value) => value.replace(/[&<>"']/g, (character) => ({
     "&": "&amp;",
     "<": "&lt;",
@@ -71,5 +88,6 @@
   });
 
   window.thwipEnhanceCodeExamples = enhanceCodeExamples;
+  installSiteIcons();
   enhanceCodeExamples();
 })();
