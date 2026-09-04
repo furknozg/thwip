@@ -34,6 +34,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("Toplam Worker Süreç Sayısı: {}", total_workers);
     match &config.runtime {
+        AsyncRuntimeConfig::Auto { .. } => {
+            println!("Runtime: auto (each worker will report the selected backend)");
+        }
         AsyncRuntimeConfig::Epoll { max_events } => {
             println!("Runtime: epoll (max events: {})", max_events);
         }

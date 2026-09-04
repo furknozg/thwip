@@ -139,6 +139,19 @@ pub struct HttpConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AsyncRuntimeConfig {
+    Auto {
+        #[serde(default = "default_epoll_max_events")]
+        max_events: usize,
+        #[serde(default = "default_sq_entries")]
+        sq_entries: u32,
+        #[serde(default = "default_cq_entries")]
+        cq_entries: u32,
+        #[serde(default = "default_buf_ring_size")]
+        buf_ring_size: u32,
+        #[serde(default = "default_buf_size")]
+        buf_size: usize,
+    },
+
     Epoll {
         #[serde(default = "default_epoll_max_events")]
         max_events: usize,

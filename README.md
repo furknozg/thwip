@@ -52,7 +52,8 @@ HTTP responses, including static files and streaming upstream proxies.
   `slave`; keep the master process runtime-agnostic.
 - [x] Add a `runtime` tagged union with `epoll`, `kqueue`, and `io_uring`
   variants.
-- [ ] Add an `auto` runtime mode once capability probing and fallback exist.
+- [x] Add an `auto` runtime mode: prefer a successfully probed `io_uring` on
+  Linux, fall back to `epoll`, and select `kqueue` on macOS/BSD.
 - [ ] Validate runtime-specific configuration at load time and reject invalid
   queue/buffer sizes with actionable errors.
 - [x] Use one listener per unique address in each worker. Every child creates
@@ -138,7 +139,7 @@ HTTP responses, including static files and streaming upstream proxies.
 - [x] Probe and validate the baseline operations required by the direct
   `io_uring` worker before listeners are started; explicit `io_uring` startup
   fails when a required operation is unavailable.
-- [ ] Use those capability results in `auto` mode so unsupported Linux hosts
+- [x] Use those capability results in `auto` mode so unsupported Linux hosts
   fall back to `epoll` with a clear reason.
 - [x] Use a direct `io-uring` driver whose worker owns the ring, listeners,
   accepted sockets, operation state, and buffers.
@@ -181,10 +182,11 @@ HTTP responses, including static files and streaming upstream proxies.
 
 ### Selection, safety, and performance
 
-- [ ] Specify the default: `auto` should prefer `io_uring` only when its
-  required features pass probing, otherwise use `epoll`.
-- [ ] Expose the selected runtime and fallback reason in startup logs and
-  metrics.
+- [x] Make explicitly configured `auto` prefer `io_uring` only when its
+  required features pass probing, otherwise use `epoll`; omitted runtime
+  configuration continues to default to `epoll`.
+- [x] Report the selected runtime and fallback reason in startup logs.
+- [ ] Expose the selected runtime and fallback reason through metrics.
 - [ ] Add parity tests so behavior and HTTP results match across backends.
 - [ ] Add benchmarks for small/large responses, keep-alive, proxy streaming,
   slow clients, and overload; publish CPU, latency, and throughput results.

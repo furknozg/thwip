@@ -1,0 +1,30 @@
+# Select io_uring when its required Linux features are available, otherwise
+# fall back to epoll. On macOS/BSD, auto selects kqueue.
+worker_count = 4
+
+[worker]
+max_connections = 1024
+max_read_buffer_size = 65536
+max_write_buffer_size = 8388608
+idle_timeout_ms = 30000
+drain_timeout_ms = 10000
+
+[proxy]
+connect_timeout_ms = 3000
+write_timeout_ms = 30000
+read_timeout_ms = 30000
+
+[dns]
+resolver_threads = 2
+timeout_ms = 3000
+
+[runtime]
+type = "auto"
+max_events = 2048
+sq_entries = 4096
+cq_entries = 8192
+buf_ring_size = 16384
+buf_size = 8192
+
+[http]
+servers = []

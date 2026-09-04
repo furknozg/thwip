@@ -10,6 +10,7 @@ pub fn start_worker(cpu_id: usize, config: &Config) -> io::Result<()> {
     let shutdown = ShutdownHandle::new();
     install_shutdown_signals(&shutdown)?;
     pin_to_cpu(cpu_id)?;
+    let runtime = select_runtime(&config.runtime);
     let listener_groups = bind_worker_listeners(config)?;
     let context = WorkerContext {
         listener_groups,
@@ -20,15 +21,50 @@ pub fn start_worker(cpu_id: usize, config: &Config) -> io::Result<()> {
         dns_limits: DnsLimits::from_config(&config.dns),
     };
 
-    match &config.runtime {
+    runtime.run(context)
+}
+
+enum SelectedRuntime {
+    Epoll(EpollRuntime),
+    Kqueue(KqueueRuntime),
+    IoUring(IoUringRuntime),
+}
+
+impl SelectedRuntime {
+    fn run(self, context: WorkerContext) -> io::Result<()> {
+        match self {
+            Self::Epoll(runtime) => runtime.run(context),
+            Self::Kqueue(runtime) => runtime.run(context),
+            Self::IoUring(runtime) => runtime.run(context),
+        }
+    }
+}
+
+fn select_runtime(config: &AsyncRuntimeConfig) -> SelectedRuntime {
+    match config {
+        AsyncRuntimeConfig::Auto {
+            max_events,
+            sq_entries,
+            cq_entries,
+            buf_ring_size,
+            buf_size,
+        } => select_auto_runtime(
+            *max_events,
+            IoUringRuntime {
+                sq_entries: *sq_entries,
+                cq_entries: *cq_entries,
+                buf_ring_size: *buf_ring_size,
+                buf_size: *buf_size,
+            },
+        ),
         AsyncRuntimeConfig::Epoll { max_events } => EpollRuntime {
             max_events: *max_events,
         }
-        .run(context),
+        .into(),
         AsyncRuntimeConfig::Kqueue { max_events } => KqueueRuntime {
             max_events: *max_events,
         }
-        .run(context),
+        .into(),
         AsyncRuntimeConfig::IoUring {
             sq_entries,
             cq_entries,
@@ -40,8 +76,46 @@ pub fn start_worker(cpu_id: usize, config: &Config) -> io::Result<()> {
             buf_ring_size: *buf_ring_size,
             buf_size: *buf_size,
         }
-        .run(context),
+        .into(),
     }
+}
+
+impl From<EpollRuntime> for SelectedRuntime {
+    fn from(runtime: EpollRuntime) -> Self {
+        Self::Epoll(runtime)
+    }
+}
+
+impl From<KqueueRuntime> for SelectedRuntime {
+    fn from(runtime: KqueueRuntime) -> Self {
+        Self::Kqueue(runtime)
+    }
+}
+
+impl From<IoUringRuntime> for SelectedRuntime {
+    fn from(runtime: IoUringRuntime) -> Self {
+        Self::IoUring(runtime)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn select_auto_runtime(max_events: usize, io_uring: IoUringRuntime) -> SelectedRuntime {
+    match io_uring.probe() {
+        Ok(()) => {
+            eprintln!("selected runtime: io_uring (configured: auto)");
+            SelectedRuntime::IoUring(io_uring)
+        }
+        Err(error) => {
+            eprintln!("selected runtime: epoll (configured: auto; io_uring unavailable: {error})");
+            SelectedRuntime::Epoll(EpollRuntime { max_events })
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn select_auto_runtime(max_events: usize, _io_uring: IoUringRuntime) -> SelectedRuntime {
+    eprintln!("selected runtime: kqueue (configured: auto; platform is not Linux)");
+    SelectedRuntime::Kqueue(KqueueRuntime { max_events })
 }
 
 fn install_shutdown_signals(shutdown: &ShutdownHandle) -> io::Result<()> {
