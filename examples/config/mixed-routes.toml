@@ -1,0 +1,36 @@
+# Fixed responses, static assets, and a balanced API on one virtual host.
+worker_count = 4
+
+[runtime]
+type = "io_uring"
+sq_entries = 4096
+cq_entries = 8192
+buf_ring_size = 16384
+buf_size = 8192
+
+[upstreams.application]
+policy = "weighted_round_robin"
+servers = [
+  { url = "http://127.0.0.1:9001", weight = 3 },
+  { url = "http://127.0.0.1:9002", weight = 1 },
+]
+
+[[http.servers]]
+server_name = "app.local"
+listen = "127.0.0.1:8080"
+
+[[http.servers.locations]]
+matcher = { type = "exact", path = "/health" }
+action = { type = "response", status = 200, body = "OK" }
+
+[[http.servers.locations]]
+matcher = { type = "prefix", path = "/api" }
+action = { type = "proxy", upstream_group = "application" }
+
+[[http.servers.locations]]
+matcher = { type = "prefix", path = "/assets" }
+action = { type = "static", directory = "./public" }
+
+[[http.servers.locations]]
+matcher = { type = "prefix", path = "/" }
+action = { type = "static", directory = "./public" }

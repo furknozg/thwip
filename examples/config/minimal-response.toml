@@ -1,0 +1,17 @@
+# Smallest useful server: return a configured response on port 8080.
+worker_count = 1
+
+[runtime]
+type = "auto"
+
+[[http.servers]]
+server_name = "localhost"
+listen = "127.0.0.1:8080"
+
+[[http.servers.locations]]
+matcher = { type = "exact", path = "/health" }
+action = { type = "response", status = 200, body = "OK" }
+
+[[http.servers.locations]]
+matcher = { type = "prefix", path = "/" }
+action = { type = "response", status = 404, body = "Not found" }

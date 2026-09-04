@@ -35,7 +35,8 @@ HTTP responses, including static files and streaming upstream proxies.
 - `run/slave/src/runtime/readiness`: shared epoll/kqueue event dispatch,
   connection phases, proxy state, and generation-safe event tokens.
 - `rginx.toml`: the default configuration read by the executable.
-- `examples/config/`: minimal independent runtime configuration examples.
+- `examples/config/`: validated examples for each runtime, direct and balanced
+  proxying, static sites, mixed routes, and shared-listener virtual hosts.
 - `.github/workflows/ci.yml`: formatting, Clippy, and workspace tests on Linux,
   including the real epoll-backed readiness path.
 

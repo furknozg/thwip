@@ -1,0 +1,36 @@
+# Two virtual hosts share one listener. Host selects the server configuration.
+worker_count = 4
+
+[runtime]
+type = "auto"
+
+[upstreams.api]
+policy = "weighted_round_robin"
+servers = [
+  { url = "http://127.0.0.1:9001", weight = 2 },
+  { url = "http://127.0.0.1:9002", weight = 1 },
+]
+
+[[http.servers]]
+server_name = "www.local"
+listen = "127.0.0.1:8080"
+
+[[http.servers.locations]]
+matcher = { type = "exact", path = "/health" }
+action = { type = "response", status = 200, body = "website ready" }
+
+[[http.servers.locations]]
+matcher = { type = "prefix", path = "/" }
+action = { type = "static", directory = "./public" }
+
+[[http.servers]]
+server_name = "api.local"
+listen = "127.0.0.1:8080"
+
+[[http.servers.locations]]
+matcher = { type = "exact", path = "/health" }
+action = { type = "response", status = 200, body = "API ready" }
+
+[[http.servers.locations]]
+matcher = { type = "prefix", path = "/" }
+action = { type = "proxy", upstream_group = "api" }

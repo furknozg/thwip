@@ -1,0 +1,21 @@
+# Equal distribution across a reusable named upstream group.
+worker_count = 4
+
+[runtime]
+type = "auto"
+
+[upstreams.api]
+policy = "round_robin"
+servers = [
+  { url = "http://127.0.0.1:9001" },
+  { url = "http://127.0.0.1:9002" },
+  { url = "http://127.0.0.1:9003" },
+]
+
+[[http.servers]]
+server_name = "api.local"
+listen = "127.0.0.1:8080"
+
+[[http.servers.locations]]
+matcher = { type = "prefix", path = "/" }
+action = { type = "proxy", upstream_group = "api" }

@@ -1,0 +1,27 @@
+# Proxy to one upstream without defining a reusable group.
+worker_count = 2
+
+[runtime]
+type = "epoll"
+max_events = 2048
+
+[proxy]
+connect_timeout_ms = 2000
+write_timeout_ms = 15000
+read_timeout_ms = 15000
+
+[dns]
+resolver_threads = 2
+timeout_ms = 2000
+
+[[http.servers]]
+server_name = "proxy.local"
+listen = "127.0.0.1:8080"
+
+[[http.servers.locations]]
+matcher = { type = "prefix", path = "/api" }
+action = { type = "proxy", upstream = "http://127.0.0.1:9000" }
+
+[[http.servers.locations]]
+matcher = { type = "exact", path = "/health" }
+action = { type = "response", status = 200, body = "proxy ready" }
