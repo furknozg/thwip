@@ -6,7 +6,6 @@ pub(super) struct UringConnection {
     pub(super) socket: OwnedFd,
     pub(super) generation: u16,
     pub(super) listener_index: usize,
-    pub(super) read_buffer: Box<[u8]>,
     pub(super) read_pending: bool,
     pub(super) request_buffer: Vec<u8>,
     pub(super) pending_request: Option<PendingRequest>,
@@ -47,11 +46,10 @@ pub(super) struct UringProxy {
     pub(super) progress_at: Instant,
     pub(super) operation_pending: bool,
     pub(super) timed_out: bool,
-    pub(super) read_buffer: Box<[u8]>,
 }
 
 impl UringProxy {
-    pub(super) fn resolving(request_buffer: Vec<u8>, buffer_size: usize) -> Self {
+    pub(super) fn resolving(request_buffer: Vec<u8>) -> Self {
         Self {
             upstream: None,
             address: None,
@@ -63,7 +61,6 @@ impl UringProxy {
             progress_at: Instant::now(),
             operation_pending: false,
             timed_out: false,
-            read_buffer: vec![0; buffer_size].into_boxed_slice(),
         }
     }
 
@@ -106,7 +103,6 @@ impl UringConnection {
             socket,
             generation,
             listener_index,
-            read_buffer: vec![0; buffer_size].into_boxed_slice(),
             read_pending: false,
             request_buffer: Vec::with_capacity(buffer_size),
             pending_request: None,

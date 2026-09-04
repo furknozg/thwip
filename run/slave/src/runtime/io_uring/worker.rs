@@ -1,4 +1,5 @@
 use super::{
+    buffer_ring::{ProvidedBufferRing, BUFFER_GROUP},
     connection::{
         next_generation, CompletedRequest, ConnectionId, PendingRequest, ProxyPhase,
         UringConnection, UringProxy,
@@ -27,6 +28,8 @@ use std::{
 
 pub struct IoUringWorker {
     ring: IoUring<squeue::Entry, cqueue::Entry>,
+    // Declared after `ring` so the kernel ring is dropped before this memory.
+    buffer_ring: ProvidedBufferRing,
     listeners: Vec<UringListener>,
     servers: Vec<Server>,
     shutdown: ShutdownHandle,
@@ -52,6 +55,7 @@ pub struct IoUringWorker {
 struct Completion {
     operation: OperationId,
     result: i32,
+    buffer_id: Option<u16>,
 }
 
 impl IoUringWorker {
@@ -61,6 +65,8 @@ impl IoUringWorker {
         let ring: IoUring<squeue::Entry, cqueue::Entry> = IoUring::builder()
             .setup_cqsize(runtime.cq_entries)
             .build(runtime.sq_entries)?;
+        let buffer_ring =
+            ProvidedBufferRing::register(&ring, runtime.buf_ring_size, runtime.buf_size)?;
 
         let listeners = context
             .listener_groups
@@ -86,6 +92,7 @@ impl IoUringWorker {
 
         Ok(Self {
             ring,
+            buffer_ring,
             listeners,
             shutdown: context.shutdown,
             connections: Slab::new(),
@@ -138,9 +145,11 @@ impl IoUringWorker {
             OperationKind::Accept => {
                 self.handle_accept_completion(completion.operation, completion.result)
             }
-            OperationKind::Read => {
-                self.handle_read_completion(completion.operation, completion.result)
-            }
+            OperationKind::Read => self.handle_read_completion(
+                completion.operation,
+                completion.result,
+                completion.buffer_id,
+            ),
             OperationKind::Write => {
                 self.handle_write_completion(completion.operation, completion.result)
             }
@@ -150,9 +159,11 @@ impl IoUringWorker {
             OperationKind::ProxyWrite => {
                 self.handle_proxy_write(completion.operation, completion.result)
             }
-            OperationKind::ProxyRead => {
-                self.handle_proxy_read(completion.operation, completion.result)
-            }
+            OperationKind::ProxyRead => self.handle_proxy_read(
+                completion.operation,
+                completion.result,
+                completion.buffer_id,
+            ),
         }
     }
 
@@ -323,18 +334,15 @@ impl IoUringWorker {
         if !connection.matches_generation(connection_id.generation) || connection.read_pending {
             return Ok(());
         }
-        let read_len = u32::try_from(connection.read_buffer.len()).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "receive buffer exceeds io_uring length capacity",
-            )
-        })?;
+        let read_len = u32::try_from(self.buffer_size).unwrap();
         let entry = opcode::Recv::new(
             types::Fd(connection.socket.as_raw_fd()),
-            connection.read_buffer.as_mut_ptr(),
+            std::ptr::null_mut(),
             read_len,
         )
+        .buf_group(BUFFER_GROUP)
         .build()
+        .flags(squeue::Flags::BUFFER_SELECT)
         .user_data(OperationId::read(connection_id.slot, connection_id.generation).encode());
 
         push_entry(&mut self.ring, &entry)?;
@@ -342,7 +350,26 @@ impl IoUringWorker {
         Ok(())
     }
 
-    fn handle_read_completion(&mut self, operation: OperationId, result: i32) -> io::Result<()> {
+    fn handle_read_completion(
+        &mut self,
+        operation: OperationId,
+        result: i32,
+        buffer_id: Option<u16>,
+    ) -> io::Result<()> {
+        let received = if result > 0 {
+            let id = buffer_id.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "receive completed without a selected buffer",
+                )
+            })?;
+            Some(self.buffer_ring.copy_and_release(id, result as usize)?)
+        } else {
+            if let Some(id) = buffer_id {
+                self.buffer_ring.copy_and_release(id, 0)?;
+            }
+            None
+        };
         let slot = operation.slot as usize;
         let Some(connection) = self.connections.get_mut(slot) else {
             return Ok(());
@@ -350,23 +377,28 @@ impl IoUringWorker {
         if !connection.matches_generation(operation.generation) {
             return Ok(());
         }
+        connection.mark_read_completed();
 
         if result <= 0 {
             if result < 0 {
                 let error = io::Error::from_raw_os_error(-result);
+                if matches!(
+                    error.raw_os_error(),
+                    Some(libc::EAGAIN | libc::EINTR | libc::ENOBUFS)
+                ) {
+                    return self.submit_recv(ConnectionId {
+                        slot: operation.slot,
+                        generation: operation.generation,
+                    });
+                }
                 eprintln!("connection {slot} receive failed: {error}");
             }
             self.connections.remove(slot);
             return Ok(());
         }
 
-        let received_len = result as usize;
-        if received_len > connection.read_buffer.len() {
-            eprintln!("connection {slot} returned an invalid receive length");
-            self.connections.remove(slot);
-            return Ok(());
-        }
-        connection.mark_read_completed();
+        let received = received.unwrap();
+        let received_len = received.len();
         if connection
             .request_buffer
             .len()
@@ -376,9 +408,7 @@ impl IoUringWorker {
             eprintln!("connection {slot} request exceeded the configured read limit");
             return self.queue_http_error(operation, 413, "request is too large");
         }
-        connection
-            .request_buffer
-            .extend_from_slice(&connection.read_buffer[..received_len]);
+        connection.request_buffer.extend_from_slice(&received);
 
         if connection.pending_request.is_none() {
             match parse_request_head(&connection.request_buffer) {
@@ -538,7 +568,7 @@ impl IoUringWorker {
         let Some(connection) = self.connections.get_mut(connection_id.slot as usize) else {
             return Ok(());
         };
-        connection.proxy = Some(UringProxy::resolving(request_buffer, self.buffer_size));
+        connection.proxy = Some(UringProxy::resolving(request_buffer));
         if let Err(error) = self.resolver.resolve(connection_id, address) {
             eprintln!("failed to schedule upstream DNS resolution: {error}");
             return self.queue_proxy_error(connection_id, 502, "upstream DNS resolution failed");
@@ -675,18 +705,15 @@ impl IoUringWorker {
             .proxy
             .as_mut()
             .unwrap();
-        let length = u32::try_from(proxy.read_buffer.len()).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "upstream read buffer is too large",
-            )
-        })?;
+        let length = u32::try_from(self.buffer_size).unwrap();
         let entry = opcode::Recv::new(
             types::Fd(proxy.upstream.as_ref().unwrap().as_raw_fd()),
-            proxy.read_buffer.as_mut_ptr(),
+            std::ptr::null_mut(),
             length,
         )
+        .buf_group(BUFFER_GROUP)
         .build()
+        .flags(squeue::Flags::BUFFER_SELECT)
         .user_data(OperationId::proxy_read(connection_id.slot, connection_id.generation).encode());
         push_entry(&mut self.ring, &entry)?;
         proxy.operation_pending = true;
@@ -750,7 +777,26 @@ impl IoUringWorker {
         }
     }
 
-    fn handle_proxy_read(&mut self, operation: OperationId, result: i32) -> io::Result<()> {
+    fn handle_proxy_read(
+        &mut self,
+        operation: OperationId,
+        result: i32,
+        buffer_id: Option<u16>,
+    ) -> io::Result<()> {
+        let received = if result > 0 {
+            let id = buffer_id.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "upstream receive completed without a selected buffer",
+                )
+            })?;
+            Some(self.buffer_ring.copy_and_release(id, result as usize)?)
+        } else {
+            if let Some(id) = buffer_id {
+                self.buffer_ring.copy_and_release(id, 0)?;
+            }
+            None
+        };
         let connection_id = ConnectionId {
             slot: operation.slot,
             generation: operation.generation,
@@ -765,7 +811,10 @@ impl IoUringWorker {
         }
         if result < 0 {
             let error = io::Error::from_raw_os_error(-result);
-            if matches!(error.raw_os_error(), Some(libc::EAGAIN | libc::EINTR)) {
+            if matches!(
+                error.raw_os_error(),
+                Some(libc::EAGAIN | libc::EINTR | libc::ENOBUFS)
+            ) {
                 return self.submit_proxy_read(connection_id);
             }
             return self.fail_proxy(connection_id, 502, "upstream response failed");
@@ -774,13 +823,12 @@ impl IoUringWorker {
             self.connections.remove(operation.slot as usize);
             return Ok(());
         }
-        let read = result as usize;
-        if read > proxy.read_buffer.len() || read > max_write_buffer_size {
+        let bytes = received.unwrap();
+        if bytes.len() > max_write_buffer_size {
             return self.fail_proxy(connection_id, 502, "upstream response chunk is too large");
         }
         proxy.response_started = true;
         proxy.record_progress();
-        let bytes = proxy.read_buffer[..read].to_vec();
         self.connections[operation.slot as usize].queue_response(bytes);
         self.submit_send(connection_id)
     }
@@ -991,13 +1039,19 @@ impl IoUringWorker {
                 return Ok(());
             }
             self.ring.submit_and_wait(1)?;
-            let completions: Vec<(u64, i32)> = self
+            let completions: Vec<(u64, i32, Option<u16>)> = self
                 .ring
                 .completion()
-                .map(|cqe| (cqe.user_data(), cqe.result()))
+                .map(|cqe| {
+                    (
+                        cqe.user_data(),
+                        cqe.result(),
+                        cqueue::buffer_select(cqe.flags()),
+                    )
+                })
                 .collect();
 
-            for (user_data, result) in completions {
+            for (user_data, result, buffer_id) in completions {
                 if user_data == super::operation::CONTROL_USER_DATA {
                     self.shutdown.request();
                     continue;
@@ -1018,10 +1072,18 @@ impl IoUringWorker {
                     continue;
                 }
                 let Some(operation) = OperationId::decode(user_data) else {
+                    if let Some(id) = buffer_id {
+                        self.buffer_ring
+                            .copy_and_release(id, result.max(0) as usize)?;
+                    }
                     eprintln!("ignoring invalid io_uring completion identifier {user_data}");
                     continue;
                 };
-                self.dispatch_completion(Completion { operation, result })?;
+                self.dispatch_completion(Completion {
+                    operation,
+                    result,
+                    buffer_id,
+                })?;
             }
             self.ring.submit()?;
         }
