@@ -3,7 +3,7 @@ use std::io;
 
 use crate::{
     bind_worker_listeners, DnsLimits, EpollRuntime, IoUringRuntime, KqueueRuntime, ProxyLimits,
-    Runtime, ShutdownHandle, WorkerContext, WorkerLimits,
+    Runtime, ShutdownHandle, WorkerContext, WorkerLimits, WorkerMetrics,
 };
 
 pub fn start_worker(cpu_id: usize, config: &Config) -> io::Result<()> {
@@ -11,6 +11,8 @@ pub fn start_worker(cpu_id: usize, config: &Config) -> io::Result<()> {
     install_shutdown_signals(&shutdown)?;
     pin_to_cpu(cpu_id)?;
     let runtime = select_runtime(&config.runtime);
+    let runtime_name = runtime.name();
+    let metrics = WorkerMetrics::default();
     let listener_groups = bind_worker_listeners(config)?;
     let context = WorkerContext {
         listener_groups,
@@ -19,9 +21,17 @@ pub fn start_worker(cpu_id: usize, config: &Config) -> io::Result<()> {
         limits: WorkerLimits::from_config(&config.worker),
         proxy_limits: ProxyLimits::from_config(&config.proxy),
         dns_limits: DnsLimits::from_config(&config.dns),
+        metrics: metrics.clone(),
     };
 
-    runtime.run(context)
+    log::info!("event=worker_start cpu_id={cpu_id} runtime={runtime_name}");
+    let result = runtime.run(context);
+    metrics.report(
+        cpu_id,
+        runtime_name,
+        if result.is_ok() { "clean" } else { "error" },
+    );
+    result
 }
 
 enum SelectedRuntime {
@@ -31,6 +41,14 @@ enum SelectedRuntime {
 }
 
 impl SelectedRuntime {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Epoll(_) => "epoll",
+            Self::Kqueue(_) => "kqueue",
+            Self::IoUring(_) => "io_uring",
+        }
+    }
+
     fn run(self, context: WorkerContext) -> io::Result<()> {
         match self {
             Self::Epoll(runtime) => runtime.run(context),

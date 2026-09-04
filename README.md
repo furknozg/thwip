@@ -101,7 +101,8 @@ HTTP responses, including static files and streaming upstream proxies.
   selection.
 - [x] Add SIGINT/SIGTERM master-to-worker shutdown and response draining.
 - [x] Enforce a configurable graceful-shutdown drain deadline.
-- [ ] Add structured logs, per-worker metrics, and shutdown reporting.
+- [x] Add key-value lifecycle logs, per-worker traffic/error counters, and a
+  final shutdown metrics report.
 - [x] Restart crashed workers with exponential backoff capped at ten seconds;
   reset the failure sequence after a stable run.
 - [ ] Build integration tests that run the same HTTP test suite against both

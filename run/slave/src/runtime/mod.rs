@@ -5,7 +5,7 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::{
     io,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::Duration,
@@ -81,6 +81,55 @@ pub struct WorkerContext {
     pub limits: WorkerLimits,
     pub proxy_limits: ProxyLimits,
     pub dns_limits: DnsLimits,
+    pub metrics: WorkerMetrics,
+}
+
+#[derive(Clone, Default)]
+pub struct WorkerMetrics(Arc<WorkerMetricCounters>);
+
+#[derive(Default)]
+struct WorkerMetricCounters {
+    accepted: AtomicU64,
+    requests: AtomicU64,
+    responses: AtomicU64,
+    bytes_read: AtomicU64,
+    bytes_written: AtomicU64,
+    errors: AtomicU64,
+}
+
+impl WorkerMetrics {
+    pub(crate) fn accepted(&self) {
+        self.0.accepted.fetch_add(1, Ordering::Relaxed);
+    }
+    pub(crate) fn request(&self) {
+        self.0.requests.fetch_add(1, Ordering::Relaxed);
+    }
+    pub(crate) fn response(&self) {
+        self.0.responses.fetch_add(1, Ordering::Relaxed);
+    }
+    pub(crate) fn read_bytes(&self, count: usize) {
+        self.0.bytes_read.fetch_add(count as u64, Ordering::Relaxed);
+    }
+    pub(crate) fn wrote_bytes(&self, count: usize) {
+        self.0
+            .bytes_written
+            .fetch_add(count as u64, Ordering::Relaxed);
+    }
+    pub(crate) fn error(&self) {
+        self.0.errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn report(&self, cpu_id: usize, runtime: &str, outcome: &str) {
+        log::info!(
+            "event=worker_shutdown cpu_id={cpu_id} runtime={runtime} outcome={outcome} accepted={} requests={} responses={} bytes_read={} bytes_written={} errors={}",
+            self.0.accepted.load(Ordering::Relaxed),
+            self.0.requests.load(Ordering::Relaxed),
+            self.0.responses.load(Ordering::Relaxed),
+            self.0.bytes_read.load(Ordering::Relaxed),
+            self.0.bytes_written.load(Ordering::Relaxed),
+            self.0.errors.load(Ordering::Relaxed),
+        );
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

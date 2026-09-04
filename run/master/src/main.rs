@@ -22,6 +22,7 @@ struct WorkerSlot {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
     let config_path = Path::new("rginx.toml");
 
     let config = if config_path.exists() {
@@ -101,6 +102,7 @@ fn supervise_workers(
     loop {
         if shutdown_requested.load(Ordering::Acquire) && !stopping {
             stopping = true;
+            log::info!("event=master_shutdown workers={}", workers.len());
             println!("[Parent] Shutdown requested; draining workers...");
             for pid in workers.iter().filter_map(|worker| worker.pid) {
                 if let Err(error) = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM) {
@@ -131,8 +133,8 @@ fn supervise_workers(
                     worker.failures = worker.failures.saturating_add(1);
                     let delay = restart_delay(worker.failures);
                     worker.restart_at = Some(Instant::now() + delay);
-                    eprintln!(
-                        "[Parent] Worker #{} crashed; restarting in {} ms (failure #{})",
+                    log::warn!(
+                        "event=worker_restart_scheduled cpu_id={} delay_ms={} failures={}",
                         worker.cpu_id,
                         delay.as_millis(),
                         worker.failures
@@ -176,6 +178,7 @@ fn spawn_worker(
     let worker_config = config.clone();
     match unsafe { nix::unistd::fork() }? {
         nix::unistd::ForkResult::Parent { child } => {
+            log::info!("event=worker_spawn cpu_id={cpu_id} pid={child}");
             println!("[Parent] Worker #{} started (PID: {})", cpu_id, child);
             Ok(child)
         }

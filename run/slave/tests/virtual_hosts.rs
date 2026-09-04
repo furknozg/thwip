@@ -130,6 +130,7 @@ fn start_worker_with_proxy_limits(
         limits,
         proxy_limits,
         dns_limits: DnsLimits::default(),
+        metrics: slave::WorkerMetrics::default(),
     };
     let worker = thread::spawn(move || run_readiness(context));
 

@@ -1,4 +1,6 @@
-use super::super::{DnsLimits, ProxyLimits, ShutdownHandle, WorkerContext, WorkerLimits};
+use super::super::{
+    DnsLimits, ProxyLimits, ShutdownHandle, WorkerContext, WorkerLimits, WorkerMetrics,
+};
 #[cfg(unix)]
 use crate::proxy::Upstream;
 #[cfg(unix)]
@@ -50,6 +52,7 @@ struct ReadinessWorker {
     proxy_limits: ProxyLimits,
     dns_limits: DnsLimits,
     resolver: DnsResolver,
+    metrics: WorkerMetrics,
     draining: bool,
     drain_started_at: Option<Instant>,
 }
@@ -85,6 +88,7 @@ impl ReadinessWorker {
         if !error_event || !self.is_current(connection_id) {
             return;
         }
+        self.metrics.error();
 
         #[cfg(target_os = "linux")]
         match self.connections[connection_id.slot].socket.take_error() {
@@ -114,6 +118,7 @@ impl ReadinessWorker {
             limits,
             proxy_limits,
             dns_limits,
+            metrics,
         } = context;
         let poll = Poll::new()?;
         let waker = Arc::new(Waker::new(poll.registry(), CONTROL_TOKEN)?);
@@ -147,6 +152,7 @@ impl ReadinessWorker {
             proxy_limits,
             dns_limits,
             resolver,
+            metrics,
             draining: false,
             drain_started_at: None,
         })
@@ -296,6 +302,7 @@ impl ReadinessWorker {
                         continue;
                     }
                     println!("accepted connection from {peer_address}");
+                    self.metrics.accepted();
                     if let Err(error) = self.register_connection(stream, listener_index) {
                         eprintln!("failed to register connection from {peer_address}: {error}");
                     }
@@ -363,6 +370,7 @@ impl ReadinessWorker {
                         break;
                     }
                     Ok(read) => {
+                        self.metrics.read_bytes(read);
                         if connection.read_buffer.len() + read > self.limits.max_read_buffer_size {
                             error_response = Some((413, "request is too large"));
                             break;
@@ -426,6 +434,7 @@ impl ReadinessWorker {
                                 [pending.body_start..pending.body_end]
                                 .to_vec();
                             request = Some(pending.head);
+                            self.metrics.request();
                             break;
                         }
                     }
@@ -724,6 +733,7 @@ impl ReadinessWorker {
         match result {
             Ok(0) => self.mark_upstream_eof(connection_id),
             Ok(read) => {
+                self.metrics.read_bytes(read);
                 let connection = &mut self.connections[connection_id.slot];
                 {
                     let proxy = connection.proxy_mut().unwrap();
@@ -835,6 +845,7 @@ impl ReadinessWorker {
                         break;
                     }
                     Ok(written) => {
+                        self.metrics.wrote_bytes(written);
                         connection.write_offset += written;
                         connection.last_progress = Instant::now();
                     }
@@ -855,6 +866,7 @@ impl ReadinessWorker {
         if write_failed {
             self.remove_connection(connection_id)?;
         } else if write_finished && self.is_current(connection_id) {
+            self.metrics.response();
             let proxy_state = self.connections[connection_id.slot]
                 .proxy()
                 .map(|proxy| proxy.upstream_eof);

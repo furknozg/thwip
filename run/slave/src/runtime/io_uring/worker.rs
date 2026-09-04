@@ -14,7 +14,7 @@ use crate::proxy::Upstream;
 use crate::{
     parse_request_head, response_bytes, route, select_server, static_response_bytes,
     BodyFramingError, DnsLimits, ProxyLimits, RequestHead, RequestHeadParse, ShutdownHandle,
-    WorkerContext, WorkerLimits,
+    WorkerContext, WorkerLimits, WorkerMetrics,
 };
 use io_uring::{cqueue, opcode, squeue, types, IoUring};
 use proxy_common::Action;
@@ -51,6 +51,7 @@ pub struct IoUringWorker {
     resolver: DnsResolver,
     timerfd: OwnedFd,
     timer_value: Box<u64>,
+    metrics: WorkerMetrics,
 }
 
 struct Completion {
@@ -118,6 +119,7 @@ impl IoUringWorker {
             resolver,
             timerfd,
             timer_value: Box::new(0),
+            metrics: context.metrics,
         })
     }
 
@@ -202,6 +204,7 @@ impl IoUringWorker {
 
         if let Some(accepted) = accepted {
             if !self.shutting_down {
+                self.metrics.accepted();
                 match self.insert_connection(accepted, listener_idx) {
                     Ok(connection_id) => self.submit_recv(connection_id)?,
                     Err(error) => eprintln!("failed to retain accepted connection: {error}"),
@@ -210,6 +213,7 @@ impl IoUringWorker {
         } else if !(self.shutting_down && -result == libc::ECANCELED)
             && !multishot_is_unsupported(result)
         {
+            self.metrics.error();
             let error = io::Error::from_raw_os_error(-result);
             eprintln!("listener {listener_idx} accept failed: {error}");
         }
@@ -281,6 +285,7 @@ impl IoUringWorker {
         }
 
         let written = result as usize;
+        self.metrics.wrote_bytes(written);
         let remaining = connection.write_buffer.len() - connection.write_offset;
         if written > remaining {
             eprintln!("connection {slot} returned an invalid send length");
@@ -298,6 +303,7 @@ impl IoUringWorker {
                     generation: operation.generation,
                 });
             }
+            self.metrics.response();
             self.connections.remove(slot);
             return Ok(());
         }
@@ -421,6 +427,7 @@ impl IoUringWorker {
 
         let received = received.unwrap();
         let received_len = received.len();
+        self.metrics.read_bytes(received_len);
         if connection
             .request_buffer
             .len()
@@ -484,6 +491,7 @@ impl IoUringWorker {
                 head: pending.head,
                 body: connection.request_buffer[pending.body_start..pending.body_end].to_vec(),
             });
+            self.metrics.request();
             return self.prepare_response(ConnectionId {
                 slot: operation.slot,
                 generation: operation.generation,
@@ -502,6 +510,7 @@ impl IoUringWorker {
         status: u16,
         message: &str,
     ) -> io::Result<()> {
+        self.metrics.error();
         let connection_id = ConnectionId {
             slot: operation.slot,
             generation: operation.generation,
@@ -764,6 +773,7 @@ impl IoUringWorker {
     }
 
     fn handle_proxy_write(&mut self, operation: OperationId, result: i32) -> io::Result<()> {
+        let metrics = self.metrics.clone();
         let connection_id = ConnectionId {
             slot: operation.slot,
             generation: operation.generation,
@@ -786,6 +796,7 @@ impl IoUringWorker {
             return self.fail_proxy(connection_id, 502, "upstream request write failed");
         }
         let written = result as usize;
+        metrics.wrote_bytes(written);
         if written > proxy.request_buffer.len() - proxy.request_offset {
             return self.fail_proxy(connection_id, 502, "invalid upstream write completion");
         }
@@ -805,6 +816,7 @@ impl IoUringWorker {
         result: i32,
         buffer_id: Option<u16>,
     ) -> io::Result<()> {
+        let metrics = self.metrics.clone();
         let received = if result > 0 {
             let id = buffer_id.ok_or_else(|| {
                 io::Error::new(
@@ -842,10 +854,12 @@ impl IoUringWorker {
             return self.fail_proxy(connection_id, 502, "upstream response failed");
         }
         if result == 0 {
+            self.metrics.response();
             self.connections.remove(operation.slot as usize);
             return Ok(());
         }
         let bytes = received.unwrap();
+        metrics.read_bytes(bytes.len());
         if bytes.len() > max_write_buffer_size {
             return self.fail_proxy(connection_id, 502, "upstream response chunk is too large");
         }
@@ -869,6 +883,7 @@ impl IoUringWorker {
         status: u16,
         message: &str,
     ) -> io::Result<()> {
+        self.metrics.error();
         let slot = connection_id.slot as usize;
         let Some(connection) = self.connections.get_mut(slot) else {
             return Ok(());
