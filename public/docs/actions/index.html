@@ -118,7 +118,8 @@ upstreams = [
               <tr><td>Request bodies</td><td><code>Content-Length</code> framing is validated and proxy requests can be forwarded.</td></tr>
               <tr><td>Transfer encoding</td><td>Unsupported transfer encodings, including chunked requests, are rejected.</td></tr>
               <tr><td>Connection lifetime</td><td>Responses explicitly close the connection; keep-alive is not available yet.</td></tr>
-              <tr><td>Unavailable</td><td>HTTP/2, HTTP/3, WebSocket upgrades, client TLS, and HTTPS upstreams are not implemented.</td></tr>
+              <tr><td>TLS ingress</td><td>Optional TLS 1.2/1.3 termination is configured per server with an <code>ssl</code> block. SNI certificate selection is not available yet.</td></tr>
+              <tr><td>Unavailable</td><td>HTTP/2, HTTP/3, WebSocket upgrades, and HTTPS upstreams are not implemented.</td></tr>
             </tbody>
           </table>
         </div>

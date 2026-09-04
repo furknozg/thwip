@@ -53,7 +53,7 @@
 
       <section id="warnings">
         <h2>Migration warnings</h2>
-        <p>The skill calls out every directive that cannot be represented safely. This includes TLS and HTTPS upstreams, regex routes, rewrites, PHP/FastCGI, WebSockets, UDP, advanced load balancing, retries, health checks, header rules, caching, compression, rate limits, and keep-alive- or chunked-body-dependent behavior.</p>
+        <p>The skill can map basic TLS termination when one certificate is sufficient, but calls out SNI certificate selection and HTTPS upstreams as unsupported. It also flags regex routes, rewrites, PHP/FastCGI, WebSockets, UDP, advanced load balancing, retries, health checks, header rules, caching, compression, rate limits, and keep-alive- or chunked-body-dependent behavior.</p>
         <p>For each warning it states whether you should preserve the existing proxy in front of Thwip, simplify the configuration, or wait for a roadmap feature. A partially migrated file is never presented as an equivalent replacement.</p>
         <div class="skill-document">
           <div class="skill-document-header">

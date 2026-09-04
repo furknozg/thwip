@@ -23,7 +23,7 @@
       <nav>
         <a href="/docs/?v=32">Overview</a><a href="/docs/runtime/?v=32">Runtime</a><a href="/docs/workers/?v=32">Workers &amp; limits</a><a aria-current="page" href="/docs/servers/?v=32">Servers &amp; routing</a>
         <div class="subnav">
-          <a href="#listeners">Listeners</a><a href="#virtual-hosts">Virtual hosts</a><a href="#matching">Route matching</a>
+          <a href="#listeners">Listeners</a><a href="#virtual-hosts">Virtual hosts</a><a href="#ssl">SSL / TLS ingress</a><a href="#matching">Route matching</a>
         </div>
         <a href="/docs/actions/?v=32">Actions</a><a href="/docs/upstreams/?v=32">Upstreams</a><a href="/docs/examples/?v=32">Use cases</a>
       <a href="/docs/migration/?v=32">Using another proxy?</a></nav>
@@ -63,6 +63,23 @@ server_name = "api.example.test"</code></pre>
         <p>
           Identical addresses share one listener. Thwip matches the request <code>Host</code> to <code>server_name</code>, ignoring ASCII case and the port. The first server in a listener group is the fallback, so place the desired default first.
         </p>
+      </section>
+      <section id="ssl">
+        <h2>
+          SSL / TLS ingress
+        </h2>
+        <pre><code>[[http.servers]]
+listen = "0.0.0.0:443"
+server_name = "example.test"
+ssl = { certificate_path = "/etc/thwip/fullchain.pem", private_key_path = "/etc/thwip/privkey.pem", handshake_timeout_ms = 10000, protocols = ["tlsv1_2", "tlsv1_3"] }</code></pre>
+        <p>
+          Adding <code>ssl</code> makes this listener accept TLS rather than plaintext HTTP. Certificate and key paths must be readable PEM files. TLS 1.2 and TLS 1.3 are supported; omit <code>protocols</code> and <code>ciphers</code> to use the secure defaults.
+        </p>
+        <div class="note">
+          <p>
+            SSL is optional. A server without an <code>ssl</code> block remains plaintext. One certificate is selected per listener today, so do not place multiple certificate-requiring virtual hosts on the same address until SNI support lands. HTTPS upstreams are also separate, unsupported work.
+          </p>
+        </div>
       </section>
       <section id="matching">
         <h2>

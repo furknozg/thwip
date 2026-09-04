@@ -8,8 +8,9 @@ best native event mechanism available on the host: epoll on Linux, kqueue on
 macOS/BSD, and io_uring where the Linux kernel supports it.
 
 > Thwip is currently suited to development and experimentation. It serves
-> plaintext HTTP and plaintext `http://` upstreams; TLS, keep-alive, HTTP/2,
-> and HTTP/3 are not available yet.
+> client-side TLS termination is available with an explicit per-server `ssl`
+> block. Upstreams remain plaintext `http://`; keep-alive, HTTP/2, HTTP/3,
+> SNI certificate selection, and HTTPS upstreams are not available yet.
 
 ## Get started
 

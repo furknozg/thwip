@@ -157,4 +157,30 @@ mod tests {
         let error = load_ssl_configs(&[server]).expect_err("unreadable certificate must fail");
         assert!(error.to_string().contains("failed to open SSL certificate"));
     }
+
+    #[test]
+    fn ssl_startup_rejects_malformed_certificate_pem() {
+        let path = std::env::temp_dir().join(format!(
+            "thwip-invalid-certificate-{}-{}.pem",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::write(&path, "not a PEM certificate").unwrap();
+        let server = Server {
+            server_name: None,
+            locations: Vec::new(),
+            listen: "127.0.0.1:443".parse::<SocketAddr>().unwrap(),
+            ssl: Some(SslServerConfig {
+                certificate_path: path.to_string_lossy().into_owned(),
+                private_key_path: "/unused/key.pem".to_owned(),
+                handshake_timeout_ms: 10_000,
+                protocols: vec![proxy_common::SslProtocol::Tlsv1_3],
+                ciphers: vec![proxy_common::SslCipher::Tls13Aes256GcmSha384],
+            }),
+        };
+
+        let error = load_ssl_configs(&[server]).expect_err("malformed PEM must fail");
+        assert!(error.to_string().contains("contains no certificates"));
+        std::fs::remove_file(path).unwrap();
+    }
 }

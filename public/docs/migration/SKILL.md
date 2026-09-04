@@ -115,6 +115,25 @@ action = { type = "static", directory = "./public" }
 
 Supported matchers are `exact` and `prefix`. Exact wins before prefix; otherwise the longest prefix wins. Regex matchers are not available yet.
 
+### SSL / TLS ingress
+
+For a source configuration that terminates TLS with one certificate, add `ssl`
+to the target server rather than an action:
+
+```toml
+[[http.servers]]
+listen = "0.0.0.0:443"
+server_name = "example.test"
+ssl = { certificate_path = "/etc/thwip/fullchain.pem", private_key_path = "/etc/thwip/privkey.pem", handshake_timeout_ms = 10000, protocols = ["tlsv1_2", "tlsv1_3"] }
+```
+
+`certificate_path` and `private_key_path` are required PEM paths. The timeout
+defaults to `10000` milliseconds. TLS 1.2 and TLS 1.3 are the only protocol
+choices; omit `ciphers` to retain the secure default suite set. SSL is optional:
+a server without this block remains plaintext. Warn instead of converting when
+the source needs SNI certificate selection, multiple certificates on one
+listener, client-certificate authentication, or HTTPS upstreams.
+
 ### Actions
 
 | Action | Required fields | Notes |
@@ -122,6 +141,7 @@ Supported matchers are `exact` and `prefix`. Exact wins before prefix; otherwise
 | `response` | `status`, `body` | Returns a fixed text response. |
 | `static` | `directory` | Serves `GET`/`HEAD`, protects the root from traversal, and selects `index.html` for directory URLs. |
 | `proxy` | Exactly one upstream form | Supports plaintext HTTP upstreams only. |
+| `ssl` | Per-server TLS termination | TLS 1.2/1.3 with PEM certificate/key paths; no SNI certificate selection. |
 
 Proxy has exactly one of these forms:
 
@@ -159,7 +179,7 @@ The supported policies are `round_robin` and `weighted_round_robin`; weighted ro
 
 Warn rather than approximate when the source needs any of the following:
 
-- TLS termination, certificates, SNI, or HTTPS upstreams;
+- SNI certificate selection or HTTPS upstreams;
 - regex or case-insensitive regex routes;
 - rewrites, redirects, `try_files`, named locations, `if`, `map`, variables, or included configuration files;
 - PHP/FastCGI, uWSGI, SCGI, gRPC, WebSockets, UDP, QUIC, or HTTP/3;
@@ -175,6 +195,7 @@ State whether the correct action is to keep the existing proxy in front of Thwip
 Before handing over the configuration, verify:
 
 - every `listen` value is a literal socket address;
+- every `ssl` block has protected, readable PEM certificate/key paths; TLS 1.2/1.3 and the configured cipher suites are intentional;
 - every proxy action configures exactly one of `upstream`, `upstream_group`, or `upstreams`;
 - named upstream groups exist and every URL is non-empty;
 - weights are positive and the selected policy is supported;

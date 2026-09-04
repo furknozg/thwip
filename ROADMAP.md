@@ -10,9 +10,29 @@ readiness path, parse framed HTTP/1.x requests, select a virtual host from its
 `Host` header, return configured fixed responses, and serve small static files.
 The initial HTTP upstream proxy streams through bounded buffers with
 backpressure and resolves hostnames on a background pool. Keep-alive, chunked
-request bodies, upstream pooling/TLS, and production hardening for `io_uring`
+request bodies, upstream pooling/HTTPS, and production hardening for `io_uring`
 remain pending. The direct `io_uring` driver can accept, parse, route, and send
 HTTP responses, including static files and streaming upstream proxies.
+
+## TLS roadmap
+
+- [x] Add optional client TLS termination through a per-server `ssl` block,
+  including PEM certificate/key loading, TLS 1.2/1.3 selection, configured
+  cipher suites, handshake deadlines, and graceful `close_notify` shutdown.
+- [x] Integrate client TLS with epoll, kqueue, and io_uring while keeping TLS
+  session state owned by each accepted connection.
+- [x] Add a rustls-client HTTPS ingress test using the checked-in, test-only
+  localhost certificate fixture.
+- [ ] Add SNI-based certificate selection for virtual hosts sharing a listener.
+- [ ] Add certificate reload without worker restart and operational certificate
+  expiry/validation reporting.
+- [ ] Add HTTPS upstreams: SNI, hostname verification, trust-store controls,
+  handshake timeouts, and separately pooled secure connections.
+- [ ] Add TLS observability and negative coverage for malformed handshakes,
+  unsupported protocol/cipher negotiation, plaintext on TLS listeners, and
+  handshake-timeout behavior on every runtime.
+- [ ] Add Linux io_uring-specific HTTPS integration coverage; the existing
+  ingress test exercises the shared readiness runtime.
 
 ## Goals
 
@@ -222,7 +242,7 @@ HTTP responses, including static files and streaming upstream proxies.
   results, and enforce a separate DNS timeout.
 - [x] Add named weighted upstream-group settings, reference validation, and
   positive-weight validation.
-- [ ] Add separate header/body limits, logging controls, TLS, and connection-pool
+- [ ] Add separate header/body limits, logging controls, and connection-pool
   settings.
 
 ## README/documentation TODOs

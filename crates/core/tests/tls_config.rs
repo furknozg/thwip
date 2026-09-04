@@ -90,3 +90,17 @@ fn ssl_rejects_an_empty_protocol_or_cipher_list() {
         assert!(error.to_string().contains("must not be empty"));
     }
 }
+
+#[test]
+fn ssl_rejects_unsupported_protocol_and_cipher_names() {
+    for setting in [
+        "protocols = [\"tlsv1_1\"]",
+        "ciphers = [\"tls_rsa_with_3des_ede_cbc_sha\"]",
+    ] {
+        let config = format!(
+            "[http]\n\n[[http.servers]]\nlisten = \"127.0.0.1:443\"\nssl = {{ certificate_path = \"/cert.pem\", private_key_path = \"/key.pem\", {setting} }}\nlocations = []"
+        );
+        let error = Config::from_toml(&config).expect_err("unsupported SSL values must fail");
+        assert!(error.to_string().contains("unknown variant"));
+    }
+}
