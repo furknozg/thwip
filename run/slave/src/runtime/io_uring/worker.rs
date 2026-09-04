@@ -594,23 +594,37 @@ impl IoUringWorker {
                 );
             }
         };
-        let address = addresses[0];
-        let socket = match create_upstream_socket(address) {
-            Ok(socket) => socket,
-            Err(error) => {
-                eprintln!("failed to create upstream socket: {error}");
-                return self.queue_proxy_error(connection_id, 502, "upstream connection failed");
-            }
-        };
         let proxy = self.connections[slot].proxy.as_mut().unwrap();
-        proxy.upstream = Some(socket);
-        proxy.address = Some(Box::new(SockAddr::from(address)));
+        proxy.addresses = addresses.into();
         proxy.transition(ProxyPhase::Connecting);
-        if let Err(error) = self.submit_proxy_connect(connection_id) {
-            eprintln!("failed to submit upstream connect: {error}");
-            return self.queue_proxy_error(connection_id, 502, "upstream connection failed");
+        self.try_next_proxy_address(connection_id)
+    }
+
+    fn try_next_proxy_address(&mut self, connection_id: ConnectionId) -> io::Result<()> {
+        loop {
+            let Some(address) = self.connections[connection_id.slot as usize]
+                .proxy
+                .as_mut()
+                .and_then(|proxy| proxy.addresses.pop_front())
+            else {
+                return self.queue_proxy_error(connection_id, 502, "upstream connection failed");
+            };
+            let socket = match create_upstream_socket(address) {
+                Ok(socket) => socket,
+                Err(error) => {
+                    eprintln!("failed to create upstream socket for {address}: {error}");
+                    continue;
+                }
+            };
+            let proxy = self.connections[connection_id.slot as usize]
+                .proxy
+                .as_mut()
+                .unwrap();
+            proxy.upstream = Some(socket);
+            proxy.address = Some(Box::new(SockAddr::from(address)));
+            proxy.record_progress();
+            return self.submit_proxy_connect(connection_id);
         }
-        Ok(())
     }
 
     fn submit_proxy_connect(&mut self, connection_id: ConnectionId) -> io::Result<()> {
@@ -692,7 +706,9 @@ impl IoUringWorker {
             return self.fail_proxy(connection_id, 504, "upstream connect timed out");
         }
         if result < 0 {
-            return self.fail_proxy(connection_id, 502, "upstream connection failed");
+            let error = io::Error::from_raw_os_error(-result);
+            eprintln!("upstream connect attempt failed: {error}");
+            return self.try_next_proxy_address(connection_id);
         }
         proxy.transition(ProxyPhase::WritingRequest);
         self.submit_proxy_write(connection_id)

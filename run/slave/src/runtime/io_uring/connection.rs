@@ -1,6 +1,6 @@
 use crate::RequestHead;
 use socket2::SockAddr;
-use std::{os::fd::OwnedFd, time::Instant};
+use std::{collections::VecDeque, net::SocketAddr, os::fd::OwnedFd, time::Instant};
 
 pub(super) struct UringConnection {
     pub(super) socket: OwnedFd,
@@ -39,6 +39,7 @@ impl ProxyPhase {
 pub(super) struct UringProxy {
     pub(super) upstream: Option<OwnedFd>,
     pub(super) address: Option<Box<SockAddr>>,
+    pub(super) addresses: VecDeque<SocketAddr>,
     pub(super) request_buffer: Vec<u8>,
     pub(super) request_offset: usize,
     pub(super) response_started: bool,
@@ -54,6 +55,7 @@ impl UringProxy {
         Self {
             upstream: None,
             address: None,
+            addresses: VecDeque::new(),
             request_buffer,
             request_offset: 0,
             response_started: false,
