@@ -6,6 +6,9 @@ members = [
     "crates/core"   # Ortak struct'lar, konfigürasyonlar ve IPC veri yapıları
 ]
 
+[workspace.package]
+license = "Apache-2.0"
+
 # Tüm paketlerde ortak kullanılacak profil optimizasyonları (Üretim modu için kritik)
 [profile.release]
 opt-level = 3           # Maksimum kod optimizasyonu
@@ -13,4 +16,3 @@ lto = "fat"             # Link-Time Optimization (Farklı crate'ler arası optim
 codegen-units = 1       # Daha iyi optimizasyon için derleme birimlerini teke düşürür
 panic = "abort"         # Çöken child sürecin performansı etkilemeden direkt kapanması için
 strip = true            # Binary boyutunu küçültmek için debug sembollerini temizler
-

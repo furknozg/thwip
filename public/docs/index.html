@@ -91,12 +91,14 @@ action = { type = "response", status = 200, body = "OK" }</code></pre>
           </p>
         </div>
         <p>
-          Moving an existing proxy configuration? Start with <a href="/docs/migration/?v=32">Using another proxy?</a>.
+          Clone the source from <a href="https://github.com/furknozg/thwip">GitHub</a>, then start with <a href="/docs/migration/?v=33">Using another proxy?</a> when you are moving an existing proxy configuration.
         </p>
         <h3>
           Build, run, and verify
         </h3>
-        <pre><code>cargo build --release
+        <pre><code>git clone https://github.com/furknozg/thwip.git
+cd thwip
+cargo build --release
 cargo run --release -p master --bin thwip-main
 
 curl -i http://127.0.0.1:8080/health</code></pre>
@@ -106,7 +108,7 @@ curl -i http://127.0.0.1:8080/health</code></pre>
       </section>
     </main>
     <footer class="doc-pagination">
-      <span></span><a href="/docs/roadmap/?v=32"><small>Next</small>Feature roadmap &rarr;</a>
+      <span></span><a href="/docs/roadmap/?v=33"><small>Next</small>Feature roadmap &rarr;</a>
     </footer>
   </body>
 </html>
