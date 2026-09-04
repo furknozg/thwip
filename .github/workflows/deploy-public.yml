@@ -1,0 +1,80 @@
+name: Deploy public site
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hostinger-public-production
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate static site
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: Check required public files
+        run: |
+          test -f public/index.html
+          test -f public/index.css
+          test -f public/docs/index.html
+          test -f public/logo.png
+
+  deploy:
+    name: Deploy to Hostinger
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: hostinger-production
+    env:
+      DEPLOY_HOST: ${{ secrets.HOSTINGER_SSH_HOST }}
+      DEPLOY_USER: ${{ secrets.HOSTINGER_SSH_USER }}
+      DEPLOY_PORT: ${{ secrets.HOSTINGER_SSH_PORT }}
+      DEPLOY_PATH: ${{ secrets.HOSTINGER_PUBLIC_PATH }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.HOSTINGER_KNOWN_HOSTS }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - name: Load deploy key
+        uses: webfactory/ssh-agent@v0.9.1
+        with:
+          ssh-private-key: ${{ secrets.HOSTINGER_SSH_PRIVATE_KEY }}
+      - name: Configure the verified Hostinger host key
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+      - name: Verify deployment target
+        run: |
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_USER"
+          test -n "$DEPLOY_PORT"
+          test -n "$DEPLOY_PATH"
+          test -n "$DEPLOY_KNOWN_HOSTS"
+          ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "test -d \"$DEPLOY_PATH\" && test -w \"$DEPLOY_PATH\""
+      - name: Synchronize static site
+        run: |
+          rsync --archive --compress --delete-delay \
+            --chmod=Du=rwx,Dgo=rx,Fu=rw,Fgo=r \
+            --exclude='.DS_Store' \
+            -e "ssh -p $DEPLOY_PORT" \
+            public/ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"
