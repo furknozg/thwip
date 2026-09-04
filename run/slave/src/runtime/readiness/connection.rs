@@ -2,6 +2,7 @@
 
 use super::proxy::ProxyState;
 use crate::RequestHead;
+use crate::StaticStream;
 use mio::net::TcpStream;
 use std::time::Instant;
 
@@ -35,6 +36,7 @@ pub(super) struct Connection {
     pub(super) listener_group: usize,
     pub(super) last_progress: Instant,
     pub(super) generation: usize,
+    pub(super) static_stream: Option<StaticStream>,
     phase: ConnectionPhase,
 }
 
@@ -48,6 +50,7 @@ impl Connection {
             listener_group,
             last_progress: Instant::now(),
             generation,
+            static_stream: None,
             phase: ConnectionPhase::Reading {
                 pending_request: None,
             },

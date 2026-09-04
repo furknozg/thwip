@@ -142,6 +142,40 @@ fn start_worker_with_proxy_limits(
 }
 
 #[test]
+fn streams_static_files_larger_than_the_in_memory_limit() {
+    let root = std::env::temp_dir().join(format!("thwip-large-static-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let body = vec![b'z'; 5 * 1024 * 1024];
+    std::fs::write(root.join("index.html"), &body).unwrap();
+    let worker = start_worker_with_actions(
+        &[(
+            "static.test",
+            Action::Static {
+                directory: root.to_string_lossy().into_owned(),
+            },
+        )],
+        WorkerLimits::default(),
+    );
+
+    let mut client = TcpStream::connect(worker.address).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    client
+        .write_all(b"GET / HTTP/1.1\r\nHost: static.test\r\n\r\n")
+        .unwrap();
+    let mut response = Vec::new();
+    client.read_to_end(&mut response).unwrap();
+    let body_start = response
+        .windows(4)
+        .position(|part| part == b"\r\n\r\n")
+        .unwrap()
+        + 4;
+    assert_eq!(&response[body_start..], body);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn streams_request_body_to_upstream_and_response_back_to_client() {
     let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
     let upstream_address = upstream.local_addr().unwrap();

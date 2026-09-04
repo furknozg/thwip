@@ -1,4 +1,4 @@
-use crate::RequestHead;
+use crate::{RequestHead, StaticStream};
 use socket2::SockAddr;
 use std::{collections::VecDeque, net::SocketAddr, os::fd::OwnedFd, time::Instant};
 
@@ -14,6 +14,7 @@ pub(super) struct UringConnection {
     pub(super) write_offset: usize,
     pub(super) write_pending: bool,
     pub(super) proxy: Option<UringProxy>,
+    pub(super) static_stream: Option<StaticStream>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +112,7 @@ impl UringConnection {
             write_offset: 0,
             write_pending: false,
             proxy: None,
+            static_stream: None,
         }
     }
 

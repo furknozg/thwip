@@ -5,8 +5,8 @@ use super::super::{
 use crate::proxy::Upstream;
 #[cfg(unix)]
 use crate::{
-    parse_request_head, response_bytes, route, select_server, static_response_bytes,
-    BodyFramingError, RequestHead, RequestHeadParse,
+    parse_request_head, response_bytes, route, select_server, static_error_response,
+    static_stream_response, BodyFramingError, RequestHead, RequestHeadParse, StaticChunk,
 };
 #[cfg(unix)]
 use mio::{net::TcpListener, net::TcpStream, Events, Interest, Poll, Token, Waker};
@@ -176,6 +176,7 @@ impl ReadinessWorker {
             self.close_expired_resolutions()?;
             self.close_expired_proxies()?;
             self.close_idle_connections()?;
+            self.pump_static_streams()?;
 
             let scheduled_writes: Vec<ConnectionId> = self.pending_writes.drain().collect();
             for connection_id in scheduled_writes {
@@ -487,11 +488,20 @@ impl ReadinessWorker {
                         )?;
                     }
                 }
-                None => {
-                    let response =
-                        self.response_for(server_index, &request.method, &request.target);
-                    self.queue_response(connection_id, response)?;
-                }
+                None => match route(server, &request.target) {
+                    Some(Action::Static { directory }) => {
+                        match static_stream_response(directory.as_ref(), &request) {
+                            Ok(response) => self.queue_static_response(connection_id, response)?,
+                            Err(error) => {
+                                self.queue_response(connection_id, static_error_response(error))?
+                            }
+                        }
+                    }
+                    _ => {
+                        let response = self.response_for(server_index, &request.target);
+                        self.queue_response(connection_id, response)?;
+                    }
+                },
             }
         }
 
@@ -866,6 +876,9 @@ impl ReadinessWorker {
         if write_failed {
             self.remove_connection(connection_id)?;
         } else if write_finished && self.is_current(connection_id) {
+            if self.connections[connection_id.slot].static_stream.is_some() {
+                return self.advance_static_stream(connection_id);
+            }
             self.metrics.response();
             let proxy_state = self.connections[connection_id.slot]
                 .proxy()
@@ -892,16 +905,14 @@ impl ReadinessWorker {
         Ok(())
     }
 
-    fn response_for(&self, server_index: usize, method: &str, target: &str) -> Vec<u8> {
+    fn response_for(&self, server_index: usize, target: &str) -> Vec<u8> {
         let Some(server) = self.servers.get(server_index) else {
             return response_bytes(500, "server configuration is unavailable");
         };
 
         match route(server, target) {
             Some(Action::Response { status, body }) => response_bytes(*status, body),
-            Some(Action::Static { directory }) => {
-                static_response_bytes(directory.as_ref(), method, target)
-            }
+            Some(Action::Static { .. }) => response_bytes(500, "static stream was not prepared"),
             Some(Action::Proxy { .. }) => {
                 response_bytes(501, "configured action is not implemented")
             }
@@ -924,7 +935,9 @@ impl ReadinessWorker {
             .connections
             .iter()
             .filter_map(|(id, connection)| {
-                (connection.write_offset >= connection.write_buffer.len()).then_some(ConnectionId {
+                (connection.static_stream.is_none()
+                    && connection.write_offset >= connection.write_buffer.len())
+                .then_some(ConnectionId {
                     slot: id,
                     generation: connection.generation,
                 })
@@ -982,6 +995,78 @@ impl ReadinessWorker {
         if let Err(error) = reregister {
             eprintln!("failed to register writable interest: {error}");
             self.remove_connection(connection_id)?;
+        }
+        Ok(())
+    }
+
+    fn queue_static_response(
+        &mut self,
+        connection_id: ConnectionId,
+        response: crate::static_files::StaticStreamResponse,
+    ) -> io::Result<()> {
+        if !self.is_current(connection_id) {
+            return Ok(());
+        }
+        self.connections[connection_id.slot].static_stream = response.stream;
+        self.queue_response(connection_id, response.head)
+    }
+
+    fn pump_static_streams(&mut self) -> io::Result<()> {
+        let ready: Vec<ConnectionId> = self
+            .connections
+            .iter()
+            .filter_map(|(slot, connection)| {
+                (connection.static_stream.is_some()
+                    && connection.write_offset == connection.write_buffer.len())
+                .then_some(ConnectionId {
+                    slot,
+                    generation: connection.generation,
+                })
+            })
+            .collect();
+        for connection_id in ready {
+            self.advance_static_stream(connection_id)?;
+        }
+        Ok(())
+    }
+
+    fn advance_static_stream(&mut self, connection_id: ConnectionId) -> io::Result<()> {
+        if !self.is_current(connection_id) {
+            return Ok(());
+        }
+        let next = self.connections[connection_id.slot]
+            .static_stream
+            .as_ref()
+            .unwrap()
+            .try_next();
+        match next {
+            Ok(StaticChunk::Data(bytes)) => {
+                let connection = &mut self.connections[connection_id.slot];
+                connection.write_buffer = bytes;
+                connection.write_offset = 0;
+                self.poll.registry().reregister(
+                    &mut connection.socket,
+                    connection_id.token(SocketRole::Client)?,
+                    Interest::WRITABLE,
+                )?;
+            }
+            Ok(StaticChunk::Pending) => {
+                let connection = &mut self.connections[connection_id.slot];
+                self.poll.registry().reregister(
+                    &mut connection.socket,
+                    connection_id.token(SocketRole::Client)?,
+                    Interest::READABLE,
+                )?;
+            }
+            Ok(StaticChunk::Finished) => {
+                self.metrics.response();
+                self.remove_connection(connection_id)?;
+            }
+            Err(error) => {
+                self.metrics.error();
+                eprintln!("static file stream failed: {error}");
+                self.remove_connection(connection_id)?;
+            }
         }
         Ok(())
     }

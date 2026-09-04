@@ -12,9 +12,9 @@ use super::{
 };
 use crate::proxy::Upstream;
 use crate::{
-    parse_request_head, response_bytes, route, select_server, static_response_bytes,
-    BodyFramingError, DnsLimits, ProxyLimits, RequestHead, RequestHeadParse, ShutdownHandle,
-    WorkerContext, WorkerLimits, WorkerMetrics,
+    parse_request_head, response_bytes, route, select_server, static_error_response,
+    static_stream_response, BodyFramingError, DnsLimits, ProxyLimits, RequestHead,
+    RequestHeadParse, ShutdownHandle, StaticChunk, WorkerContext, WorkerLimits, WorkerMetrics,
 };
 use io_uring::{cqueue, opcode, squeue, types, IoUring};
 use proxy_common::Action;
@@ -294,6 +294,14 @@ impl IoUringWorker {
         }
         connection.write_offset += written;
         if connection.write_offset == connection.write_buffer.len() {
+            if connection.static_stream.is_some() {
+                connection.write_buffer.clear();
+                connection.write_offset = 0;
+                return self.advance_static_stream(ConnectionId {
+                    slot: operation.slot,
+                    generation: operation.generation,
+                });
+            }
             if let Some(proxy) = connection.proxy.as_mut() {
                 connection.write_buffer.clear();
                 connection.write_offset = 0;
@@ -556,11 +564,15 @@ impl IoUringWorker {
             .cloned();
         let response = match action {
             Some(Action::Response { status, body }) => response_bytes(status, &body),
-            Some(Action::Static { directory }) => static_response_bytes(
-                directory.as_ref(),
-                &request_head.method,
-                &request_head.target,
-            ),
+            Some(Action::Static { directory }) => {
+                return match static_stream_response(directory.as_ref(), &request_head) {
+                    Ok(response) => self.queue_static_response(connection_id, response),
+                    Err(error) => {
+                        self.connections[slot].queue_response(static_error_response(error));
+                        self.submit_send(connection_id)
+                    }
+                };
+            }
             Some(Action::Proxy { upstream }) => {
                 return self.start_proxy(connection_id, &upstream, &request_head, &request_body);
             }
@@ -1000,7 +1012,65 @@ impl IoUringWorker {
         // The periodic timer also wakes a draining worker so its graceful
         // shutdown deadline is enforced even when clients are otherwise idle.
         self.submit_timer_read()?;
+        self.pump_static_streams()?;
         Ok(())
+    }
+
+    fn queue_static_response(
+        &mut self,
+        connection_id: ConnectionId,
+        response: crate::static_files::StaticStreamResponse,
+    ) -> io::Result<()> {
+        let connection = &mut self.connections[connection_id.slot as usize];
+        connection.static_stream = response.stream;
+        connection.queue_response(response.head);
+        self.submit_send(connection_id)
+    }
+
+    fn pump_static_streams(&mut self) -> io::Result<()> {
+        let ready: Vec<ConnectionId> = self
+            .connections
+            .iter()
+            .filter_map(|(slot, connection)| {
+                (connection.static_stream.is_some()
+                    && !connection.write_pending
+                    && connection.write_buffer.is_empty())
+                .then_some(ConnectionId {
+                    slot: slot as u32,
+                    generation: connection.generation,
+                })
+            })
+            .collect();
+        for connection_id in ready {
+            self.advance_static_stream(connection_id)?;
+        }
+        Ok(())
+    }
+
+    fn advance_static_stream(&mut self, connection_id: ConnectionId) -> io::Result<()> {
+        let next = self.connections[connection_id.slot as usize]
+            .static_stream
+            .as_ref()
+            .unwrap()
+            .try_next();
+        match next {
+            Ok(StaticChunk::Data(bytes)) => {
+                self.connections[connection_id.slot as usize].queue_response(bytes);
+                self.submit_send(connection_id)
+            }
+            Ok(StaticChunk::Pending) => Ok(()),
+            Ok(StaticChunk::Finished) => {
+                self.metrics.response();
+                self.connections.remove(connection_id.slot as usize);
+                Ok(())
+            }
+            Err(error) => {
+                self.metrics.error();
+                eprintln!("static file stream failed: {error}");
+                self.connections.remove(connection_id.slot as usize);
+                Ok(())
+            }
+        }
     }
 
     fn begin_shutdown(&mut self) -> io::Result<()> {

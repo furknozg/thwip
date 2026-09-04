@@ -88,8 +88,9 @@ HTTP responses, including static files and streaming upstream proxies.
 - [x] Implement small, safe static-file serving: `GET`/`HEAD`, index files,
   query stripping, traversal protection, root containment, MIME types, and an
   in-memory file-size limit.
-- [ ] Stream large static files without blocking the event loop; add range,
-  cache, and full MIME support.
+- [x] Stream large static files through bounded background reads without
+  blocking event loops; support single byte ranges, ETags/conditional requests,
+  cache headers, and MIME database lookup.
 - [x] Implement bounded nonblocking HTTP upstream proxying: forward validated
   request bodies, strip hop-by-hop headers, rewrite `Host`, stream responses
   with client backpressure, and return `502` on upstream failure.
