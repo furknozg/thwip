@@ -13,6 +13,10 @@ macOS/BSD, and io_uring where the Linux kernel supports it.
 
 ## Get started
 
+### Check our Docs
+
+For further documentation of configuring and setting up thwip, check out the [Thwip Documentation](https://thwip.tech/).
+
 ### Prerequisites
 
 - A Unix-like host: Linux, macOS, or a supported BSD.
