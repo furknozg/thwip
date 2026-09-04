@@ -19,7 +19,7 @@
       <nav>
         <a aria-current="page" href="/docs/?v=32">Overview</a>
         <div class="subnav">
-          <a href="#what-is-thwip">What is Thwip?</a><a href="#why-thwip">Why Thwip?</a><a href="#pronunciation">Pronunciation</a><a href="#getting-started">Getting started</a><a href="/docs/roadmap/?v=32">Feature roadmap</a>
+          <a href="#what-is-thwip">What is Thwip?</a><a href="#why-thwip">Why Thwip?</a><a href="#pronunciation">Pronunciation</a><a href="#getting-started">Getting started</a><a href="#license">License</a><a href="/docs/roadmap/?v=32">Feature roadmap</a>
         </div>
         <a href="/docs/runtime/?v=32">Runtime</a><a href="/docs/workers/?v=32">Workers &amp; limits</a><a href="/docs/servers/?v=32">Servers &amp; routing</a><a href="/docs/actions/?v=32">Actions</a><a href="/docs/upstreams/?v=32">Upstreams</a><a href="/docs/examples/?v=32">Use cases</a>
       <a href="/docs/migration/?v=32">Using another proxy?</a></nav>
@@ -104,6 +104,17 @@ cargo run --release -p master --bin thwip-main
 curl -i http://127.0.0.1:8080/health</code></pre>
         <p>
           Run Thwip from the repository root: the executable reads <code>rginx.toml</code> from the current working directory. Change the listener address if port 8080 is already in use; the configured health route should return <code>200 OK</code>.
+        </p>
+      </section>
+      <section id="license">
+        <h2>
+          License
+        </h2>
+        <p>
+          Thwip is available under the Apache License, Version 2.0. It permits commercial and private use, modification, and redistribution, while providing an explicit patent grant from contributors and the usual no-warranty terms.
+        </p>
+        <p>
+          Read the complete <a href="https://github.com/furknozg/thwip/blob/main/LICENSE">Apache-2.0 license</a> in the repository.
         </p>
       </section>
     </main>

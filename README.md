@@ -79,4 +79,5 @@ io_uring integration coverage remains a roadmap item.
 ## License and contribution
 
 Thwip is licensed under the [Apache License, Version 2.0](LICENSE). Please open
-an issue before relying on it in production or proposing a large change.
+an issue before relying on it in production or proposing a large change. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow.
