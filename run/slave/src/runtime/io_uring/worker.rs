@@ -1,10 +1,15 @@
 use super::{
-    connection::{next_generation, ConnectionId, UringConnection},
+    connection::{
+        next_generation, CompletedRequest, ConnectionId, PendingRequest, UringConnection,
+    },
     listener::UringListener,
     operation::{OperationId, OperationKind},
     IoUringRuntime,
 };
-use crate::{DnsLimits, ProxyLimits, ShutdownHandle, WorkerContext, WorkerLimits};
+use crate::{
+    parse_request_head, BodyFramingError, DnsLimits, ProxyLimits, RequestHeadParse, ShutdownHandle,
+    WorkerContext, WorkerLimits,
+};
 use io_uring::{cqueue, opcode, squeue, types, IoUring};
 use proxy_common::Server;
 use slab::Slab;
@@ -231,8 +236,76 @@ impl IoUringWorker {
             self.connections.remove(slot);
             return Ok(());
         }
-        connection.mark_read_completed(received_len);
-        Ok(())
+        connection.mark_read_completed();
+        if connection.request_buffer.len() + received_len > self.limits.max_read_buffer_size {
+            eprintln!("connection {slot} request exceeded the configured read limit");
+            self.connections.remove(slot);
+            return Ok(());
+        }
+        connection
+            .request_buffer
+            .extend_from_slice(&connection.read_buffer[..received_len]);
+
+        if connection.pending_request.is_none() {
+            match parse_request_head(&connection.request_buffer) {
+                Ok(RequestHeadParse::Incomplete) => {}
+                Ok(RequestHeadParse::Complete { request, consumed }) => {
+                    let body_length = match request.body_length() {
+                        Ok(length) => length,
+                        Err(BodyFramingError::UnsupportedTransferEncoding) => {
+                            eprintln!("connection {slot} used unsupported transfer encoding");
+                            self.connections.remove(slot);
+                            return Ok(());
+                        }
+                        Err(
+                            BodyFramingError::InvalidContentLength
+                            | BodyFramingError::ConflictingContentLength,
+                        ) => {
+                            eprintln!("connection {slot} sent an invalid content length");
+                            self.connections.remove(slot);
+                            return Ok(());
+                        }
+                    };
+                    let Some(body_end) = consumed.checked_add(body_length) else {
+                        self.connections.remove(slot);
+                        return Ok(());
+                    };
+                    if body_end > self.limits.max_read_buffer_size {
+                        eprintln!("connection {slot} request body exceeded the configured limit");
+                        self.connections.remove(slot);
+                        return Ok(());
+                    }
+                    connection.pending_request = Some(PendingRequest {
+                        head: request,
+                        body_start: consumed,
+                        body_end,
+                    });
+                }
+                Err(error) => {
+                    eprintln!("connection {slot} sent an invalid HTTP request: {error}");
+                    self.connections.remove(slot);
+                    return Ok(());
+                }
+            }
+        }
+
+        let request_complete = connection
+            .pending_request
+            .as_ref()
+            .is_some_and(|pending| connection.request_buffer.len() >= pending.body_end);
+        if request_complete {
+            let pending = connection.pending_request.take().unwrap();
+            connection.request = Some(CompletedRequest {
+                head: pending.head,
+                body: connection.request_buffer[pending.body_start..pending.body_end].to_vec(),
+            });
+            return Ok(());
+        }
+
+        self.submit_recv(ConnectionId {
+            slot: operation.slot,
+            generation: operation.generation,
+        })
     }
 
     /// Submit initial operations and dispatch completions until shutdown.

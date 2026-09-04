@@ -1,5 +1,6 @@
 #![allow(dead_code)] // Fields become active when Recv submission is added.
 
+use crate::RequestHead;
 use std::os::fd::OwnedFd;
 
 pub(super) struct UringConnection {
@@ -8,7 +9,20 @@ pub(super) struct UringConnection {
     pub(super) listener_index: usize,
     pub(super) read_buffer: Box<[u8]>,
     pub(super) read_pending: bool,
-    pub(super) received_len: usize,
+    pub(super) request_buffer: Vec<u8>,
+    pub(super) pending_request: Option<PendingRequest>,
+    pub(super) request: Option<CompletedRequest>,
+}
+
+pub(super) struct PendingRequest {
+    pub(super) head: RequestHead,
+    pub(super) body_start: usize,
+    pub(super) body_end: usize,
+}
+
+pub(super) struct CompletedRequest {
+    pub(super) head: RequestHead,
+    pub(super) body: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,7 +44,9 @@ impl UringConnection {
             listener_index,
             read_buffer: vec![0; buffer_size].into_boxed_slice(),
             read_pending: false,
-            received_len: 0,
+            request_buffer: Vec::with_capacity(buffer_size),
+            pending_request: None,
+            request: None,
         }
     }
 
@@ -49,9 +65,8 @@ impl UringConnection {
         self.read_pending = true;
     }
 
-    pub(super) fn mark_read_completed(&mut self, received_len: usize) {
+    pub(super) fn mark_read_completed(&mut self) {
         self.read_pending = false;
-        self.received_len = received_len;
     }
 }
 
