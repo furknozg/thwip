@@ -52,6 +52,7 @@ pub fn run_epoll_with_shutdown(
         proxy_limits: ProxyLimits::default(),
         dns_limits: DnsLimits::default(),
         metrics: WorkerMetrics::default(),
+        upstream_groups: Default::default(),
     })
 }
 

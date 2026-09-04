@@ -1,5 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use std::{
+    collections::HashMap,
     fs,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::Path,
@@ -25,6 +26,9 @@ pub struct Config {
 
     #[serde(default)]
     pub dns: DnsConfig,
+
+    #[serde(default)]
+    pub upstreams: HashMap<String, UpstreamGroup>,
 }
 
 /// Limits shared by every worker runtime. Durations are expressed in
@@ -357,6 +361,8 @@ pub enum Action {
         #[serde(default)]
         upstream: Option<String>,
         #[serde(default)]
+        upstream_group: Option<String>,
+        #[serde(default)]
         upstreams: Vec<UpstreamEndpoint>,
         #[serde(default)]
         policy: BalancePolicy,
@@ -386,6 +392,13 @@ pub struct UpstreamEndpoint {
         deserialize_with = "deserialize_upstream_weight"
     )]
     pub weight: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpstreamGroup {
+    #[serde(default)]
+    pub policy: BalancePolicy,
+    pub servers: Vec<UpstreamEndpoint>,
 }
 
 const fn default_upstream_weight() -> u32 {
@@ -434,6 +447,7 @@ impl Default for Config {
             worker: WorkerConfig::default(),
             proxy: ProxyTimeoutConfig::default(),
             dns: DnsConfig::default(),
+            upstreams: HashMap::new(),
         }
     }
 }
@@ -450,18 +464,32 @@ impl Config {
     }
 
     fn validate(&self) -> Result<(), String> {
+        for (name, group) in &self.upstreams {
+            if name.trim().is_empty() {
+                return Err("upstream group name must not be empty".to_owned());
+            }
+            if group.servers.is_empty() {
+                return Err(format!(
+                    "upstream group {name:?} must contain at least one server"
+                ));
+            }
+            validate_endpoints(&group.servers)?;
+        }
         for server in &self.http.servers {
             for location in &server.locations {
                 if let Action::Proxy {
                     upstream,
+                    upstream_group,
                     upstreams,
                     ..
                 } = &location.action
                 {
-                    if upstream.is_some() == !upstreams.is_empty() {
+                    let configured = usize::from(upstream.is_some())
+                        + usize::from(upstream_group.is_some())
+                        + usize::from(!upstreams.is_empty());
+                    if configured != 1 {
                         return Err(
-                            "proxy action must configure exactly one of upstream or upstreams"
-                                .to_owned(),
+                            "proxy action must configure exactly one of upstream, upstream_group, or upstreams".to_owned(),
                         );
                     }
                     if upstream.as_ref().is_some_and(|url| url.trim().is_empty())
@@ -471,16 +499,32 @@ impl Config {
                     {
                         return Err("proxy upstream URL must not be empty".to_owned());
                     }
-                    upstreams.iter().try_fold(0_u64, |total, endpoint| {
-                        total
-                            .checked_add(u64::from(endpoint.weight))
-                            .ok_or_else(|| "proxy upstream weights are too large".to_owned())
-                    })?;
+                    validate_endpoints(upstreams)?;
+                    if let Some(name) = upstream_group
+                        && !self.upstreams.contains_key(name)
+                    {
+                        return Err(format!("proxy references unknown upstream group {name:?}"));
+                    }
                 }
             }
         }
         Ok(())
     }
+}
+
+fn validate_endpoints(endpoints: &[UpstreamEndpoint]) -> Result<(), String> {
+    if endpoints
+        .iter()
+        .any(|endpoint| endpoint.url.trim().is_empty())
+    {
+        return Err("proxy upstream URL must not be empty".to_owned());
+    }
+    endpoints.iter().try_fold(0_u64, |total, endpoint| {
+        total
+            .checked_add(u64::from(endpoint.weight))
+            .ok_or_else(|| "proxy upstream weights are too large".to_owned())
+    })?;
+    Ok(())
 }
 
 #[derive(Debug, Error)]

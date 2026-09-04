@@ -1,9 +1,11 @@
-use proxy_common::{Action, BalancePolicy, UpstreamEndpoint};
+use proxy_common::{Action, BalancePolicy, UpstreamEndpoint, UpstreamGroup};
 use slave::UpstreamBalancer;
+use std::collections::HashMap;
 
 fn group(policy: BalancePolicy, weights: &[u32]) -> Action {
     Action::Proxy {
         upstream: None,
+        upstream_group: None,
         upstreams: weights
             .iter()
             .enumerate()
@@ -54,6 +56,7 @@ fn weighted_round_robin_obeys_configured_share() {
 fn legacy_single_upstream_remains_supported() {
     let action = Action::Proxy {
         upstream: Some("http://legacy:8080".into()),
+        upstream_group: None,
         upstreams: Vec::new(),
         policy: BalancePolicy::default(),
     };
@@ -61,4 +64,34 @@ fn legacy_single_upstream_remains_supported() {
         UpstreamBalancer::default().select(&action).unwrap(),
         "http://legacy:8080"
     );
+}
+
+#[test]
+fn named_routes_share_the_group_cursor() {
+    let mut groups = HashMap::new();
+    groups.insert(
+        "api".to_owned(),
+        UpstreamGroup {
+            policy: BalancePolicy::RoundRobin,
+            servers: vec![
+                UpstreamEndpoint {
+                    url: "http://a".into(),
+                    weight: 1,
+                },
+                UpstreamEndpoint {
+                    url: "http://b".into(),
+                    weight: 1,
+                },
+            ],
+        },
+    );
+    let action = Action::Proxy {
+        upstream: None,
+        upstream_group: Some("api".into()),
+        upstreams: Vec::new(),
+        policy: BalancePolicy::default(),
+    };
+    let mut balancer = UpstreamBalancer::with_groups(groups);
+    assert_eq!(balancer.select(&action).unwrap(), "http://a");
+    assert_eq!(balancer.select(&action).unwrap(), "http://b");
 }

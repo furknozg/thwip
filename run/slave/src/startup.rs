@@ -22,6 +22,7 @@ pub fn start_worker(cpu_id: usize, config: &Config) -> io::Result<()> {
         proxy_limits: ProxyLimits::from_config(&config.proxy),
         dns_limits: DnsLimits::from_config(&config.dns),
         metrics: metrics.clone(),
+        upstream_groups: config.upstreams.clone(),
     };
 
     log::info!("event=worker_start cpu_id={cpu_id} runtime={runtime_name}");

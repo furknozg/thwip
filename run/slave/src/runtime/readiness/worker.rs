@@ -121,6 +121,7 @@ impl ReadinessWorker {
             proxy_limits,
             dns_limits,
             metrics,
+            upstream_groups,
         } = context;
         let poll = Poll::new()?;
         let waker = Arc::new(Waker::new(poll.registry(), CONTROL_TOKEN)?);
@@ -155,7 +156,7 @@ impl ReadinessWorker {
             dns_limits,
             resolver,
             metrics,
-            balancer: UpstreamBalancer::default(),
+            balancer: UpstreamBalancer::with_groups(upstream_groups),
             draining: false,
             drain_started_at: None,
         })

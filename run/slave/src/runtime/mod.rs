@@ -3,6 +3,7 @@ use proxy_common::{DnsConfig, ProxyTimeoutConfig, Server, WorkerConfig};
 #[cfg(target_os = "linux")]
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::{
+    collections::HashMap,
     io,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -82,6 +83,7 @@ pub struct WorkerContext {
     pub proxy_limits: ProxyLimits,
     pub dns_limits: DnsLimits,
     pub metrics: WorkerMetrics,
+    pub upstream_groups: HashMap<String, proxy_common::UpstreamGroup>,
 }
 
 #[derive(Clone, Default)]

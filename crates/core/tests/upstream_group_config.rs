@@ -7,20 +7,25 @@ fn parses_weighted_upstream_group() {
 [runtime]
 type = "epoll"
 
+[upstreams.api]
+policy = "weighted_round_robin"
+servers = [
+  { url = "http://127.0.0.1:9001", weight = 2 },
+  { url = "http://127.0.0.1:9002", weight = 1 }
+]
+
 [[http.servers]]
 listen = "127.0.0.1:8080"
 [[http.servers.locations]]
 matcher = { type = "prefix", path = "/" }
-action = { type = "proxy", policy = "weighted_round_robin", upstreams = [
-  { url = "http://127.0.0.1:9001", weight = 2 },
-  { url = "http://127.0.0.1:9002", weight = 1 }
-] }
+action = { type = "proxy", upstream_group = "api" }
 "#,
     )
     .unwrap();
 
     let Action::Proxy {
         upstream,
+        upstream_group,
         upstreams,
         policy,
     } = &config.http.servers[0].locations[0].action
@@ -28,8 +33,10 @@ action = { type = "proxy", policy = "weighted_round_robin", upstreams = [
         panic!("expected proxy action");
     };
     assert!(upstream.is_none());
+    assert_eq!(upstream_group.as_deref(), Some("api"));
+    assert!(upstreams.is_empty());
     assert_eq!(*policy, BalancePolicy::WeightedRoundRobin);
-    assert_eq!(upstreams[0].weight, 2);
+    assert_eq!(config.upstreams["api"].servers[0].weight, 2);
 }
 
 #[test]
@@ -38,6 +45,7 @@ fn rejects_missing_ambiguous_and_zero_weight_upstreams() {
         "action = { type = \"proxy\" }",
         "action = { type = \"proxy\", upstream = \"http://a\", upstreams = [{ url = \"http://b\" }] }",
         "action = { type = \"proxy\", upstreams = [{ url = \"http://a\", weight = 0 }] }",
+        "action = { type = \"proxy\", upstream_group = \"missing\" }",
     ] {
         let source = format!(
             "[[http.servers]]\nlisten = \"127.0.0.1:8080\"\n[[http.servers.locations]]\nmatcher = {{ type = \"prefix\", path = \"/\" }}\n{action}"

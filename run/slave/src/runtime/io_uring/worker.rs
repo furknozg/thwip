@@ -122,7 +122,7 @@ impl IoUringWorker {
             timerfd,
             timer_value: Box::new(0),
             metrics: context.metrics,
-            balancer: UpstreamBalancer::default(),
+            balancer: UpstreamBalancer::with_groups(context.upstream_groups),
         })
     }
 

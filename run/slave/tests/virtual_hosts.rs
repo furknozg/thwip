@@ -131,6 +131,7 @@ fn start_worker_with_proxy_limits(
         proxy_limits,
         dns_limits: DnsLimits::default(),
         metrics: slave::WorkerMetrics::default(),
+        upstream_groups: Default::default(),
     };
     let worker = thread::spawn(move || run_readiness(context));
 
@@ -205,6 +206,7 @@ fn streams_request_body_to_upstream_and_response_back_to_client() {
             "proxy.test",
             Action::Proxy {
                 upstream: Some(format!("http://{upstream_address}")),
+                upstream_group: None,
                 upstreams: Vec::new(),
                 policy: BalancePolicy::default(),
             },
@@ -264,6 +266,7 @@ fn balances_proxy_requests_across_an_upstream_group() {
             "balanced.test",
             Action::Proxy {
                 upstream: None,
+                upstream_group: None,
                 upstreams: endpoints
                     .iter()
                     .map(|address| UpstreamEndpoint {
@@ -294,6 +297,7 @@ fn returns_bad_gateway_when_upstream_connect_fails() {
             "proxy.test",
             Action::Proxy {
                 upstream: Some(format!("http://{unavailable_address}")),
+                upstream_group: None,
                 upstreams: Vec::new(),
                 policy: BalancePolicy::default(),
             },
@@ -329,6 +333,7 @@ fn resolves_hostname_upstreams_on_the_background_pool() {
             "proxy.test",
             Action::Proxy {
                 upstream: Some(format!("http://localhost:{upstream_port}")),
+                upstream_group: None,
                 upstreams: Vec::new(),
                 policy: BalancePolicy::default(),
             },
@@ -364,6 +369,7 @@ fn returns_gateway_timeout_when_upstream_response_stalls() {
             "proxy.test",
             Action::Proxy {
                 upstream: Some(format!("http://{upstream_address}")),
+                upstream_group: None,
                 upstreams: Vec::new(),
                 policy: BalancePolicy::default(),
             },

@@ -3,6 +3,13 @@ worker_count = 4
 [runtime]
 type = "auto"
 
+[upstreams.api]
+policy = "weighted_round_robin"
+servers = [
+  { url = "http://127.0.0.1:9001", weight = 2 },
+  { url = "http://127.0.0.1:9002", weight = 1 },
+]
+
 [[http.servers]]
 server_name = "balanced.local"
 listen = "127.0.0.1:8080"
@@ -12,8 +19,4 @@ matcher = { type = "prefix", path = "/" }
 
 [http.servers.locations.action]
 type = "proxy"
-policy = "weighted_round_robin"
-upstreams = [
-  { url = "http://127.0.0.1:9001", weight = 2 },
-  { url = "http://127.0.0.1:9002", weight = 1 },
-]
+upstream_group = "api"

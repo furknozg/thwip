@@ -1,8 +1,9 @@
-use proxy_common::{Action, BalancePolicy, UpstreamEndpoint};
+use proxy_common::{Action, BalancePolicy, UpstreamEndpoint, UpstreamGroup};
 use std::{collections::HashMap, fmt};
 
 #[derive(Default)]
 pub struct UpstreamBalancer {
+    groups: HashMap<String, UpstreamGroup>,
     cursors: HashMap<String, u64>,
 }
 
@@ -12,6 +13,7 @@ pub enum BalanceError {
     MissingUpstream,
     AmbiguousUpstream,
     InvalidWeight,
+    UnknownGroup(String),
 }
 
 impl fmt::Display for BalanceError {
@@ -23,31 +25,55 @@ impl fmt::Display for BalanceError {
                 "proxy action must configure either upstream or upstreams, but not both",
             ),
             Self::InvalidWeight => formatter.write_str("upstream weights exceed supported range"),
+            Self::UnknownGroup(name) => write!(formatter, "unknown upstream group {name:?}"),
         }
     }
 }
 
 impl UpstreamBalancer {
+    pub fn with_groups(groups: HashMap<String, UpstreamGroup>) -> Self {
+        Self {
+            groups,
+            cursors: HashMap::new(),
+        }
+    }
+
     pub fn select(&mut self, action: &Action) -> Result<String, BalanceError> {
         let Action::Proxy {
             upstream,
+            upstream_group,
             upstreams,
             policy,
         } = action
         else {
             return Err(BalanceError::NotProxy);
         };
-        if upstream.is_some() && !upstreams.is_empty() {
+        let configured = usize::from(upstream.is_some())
+            + usize::from(upstream_group.is_some())
+            + usize::from(!upstreams.is_empty());
+        if configured > 1 {
             return Err(BalanceError::AmbiguousUpstream);
         }
         if let Some(upstream) = upstream {
             return Ok(upstream.clone());
         }
+        let (key, policy, upstreams) = if let Some(name) = upstream_group {
+            let group = self
+                .groups
+                .get(name)
+                .ok_or_else(|| BalanceError::UnknownGroup(name.clone()))?;
+            (
+                format!("named:{name}"),
+                &group.policy,
+                group.servers.as_slice(),
+            )
+        } else {
+            (group_key(policy, upstreams), policy, upstreams.as_slice())
+        };
         if upstreams.is_empty() {
             return Err(BalanceError::MissingUpstream);
         }
 
-        let key = group_key(policy, upstreams);
         let cursor = self.cursors.entry(key).or_default();
         let selected = match policy {
             BalancePolicy::RoundRobin => (*cursor as usize) % upstreams.len(),
