@@ -140,36 +140,69 @@ pub struct HttpConfig {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AsyncRuntimeConfig {
     Auto {
-        #[serde(default = "default_epoll_max_events")]
+        #[serde(
+            default = "default_epoll_max_events",
+            deserialize_with = "deserialize_runtime_positive_usize"
+        )]
         max_events: usize,
-        #[serde(default = "default_sq_entries")]
+        #[serde(
+            default = "default_sq_entries",
+            deserialize_with = "deserialize_runtime_positive_u32"
+        )]
         sq_entries: u32,
-        #[serde(default = "default_cq_entries")]
+        #[serde(
+            default = "default_cq_entries",
+            deserialize_with = "deserialize_runtime_positive_u32"
+        )]
         cq_entries: u32,
-        #[serde(default = "default_buf_ring_size")]
+        #[serde(
+            default = "default_buf_ring_size",
+            deserialize_with = "deserialize_buf_ring_size"
+        )]
         buf_ring_size: u32,
-        #[serde(default = "default_buf_size")]
+        #[serde(
+            default = "default_buf_size",
+            deserialize_with = "deserialize_runtime_positive_usize"
+        )]
         buf_size: usize,
     },
 
     Epoll {
-        #[serde(default = "default_epoll_max_events")]
+        #[serde(
+            default = "default_epoll_max_events",
+            deserialize_with = "deserialize_runtime_positive_usize"
+        )]
         max_events: usize,
     },
 
     Kqueue {
-        #[serde(default = "default_epoll_max_events")]
+        #[serde(
+            default = "default_epoll_max_events",
+            deserialize_with = "deserialize_runtime_positive_usize"
+        )]
         max_events: usize,
     },
 
     IoUring {
-        #[serde(default = "default_sq_entries")]
+        #[serde(
+            default = "default_sq_entries",
+            deserialize_with = "deserialize_runtime_positive_u32"
+        )]
         sq_entries: u32,
-        #[serde(default = "default_cq_entries")]
+        #[serde(
+            default = "default_cq_entries",
+            deserialize_with = "deserialize_runtime_positive_u32"
+        )]
         cq_entries: u32,
-        #[serde(default = "default_buf_ring_size")]
+        #[serde(
+            default = "default_buf_ring_size",
+            deserialize_with = "deserialize_buf_ring_size"
+        )]
         buf_ring_size: u32,
-        #[serde(default = "default_buf_size")]
+        #[serde(
+            default = "default_buf_size",
+            deserialize_with = "deserialize_runtime_positive_usize"
+        )]
         buf_size: usize,
     },
 }
@@ -260,6 +293,45 @@ where
     let value = u64::deserialize(deserializer)?;
     if value == 0 {
         return Err(D::Error::custom("worker timeout must be greater than zero"));
+    }
+    Ok(value)
+}
+
+fn deserialize_runtime_positive_usize<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = usize::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(D::Error::custom(
+            "runtime queue and buffer sizes must be greater than zero",
+        ));
+    }
+    Ok(value)
+}
+
+fn deserialize_runtime_positive_u32<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = u32::deserialize(deserializer)?;
+    if value == 0 {
+        return Err(D::Error::custom(
+            "io_uring SQ/CQ entry counts must be greater than zero",
+        ));
+    }
+    Ok(value)
+}
+
+fn deserialize_buf_ring_size<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = u32::deserialize(deserializer)?;
+    if value == 0 || value > 32_768 || !value.is_power_of_two() {
+        return Err(D::Error::custom(
+            "io_uring buf_ring_size must be a power of two between 1 and 32768",
+        ));
     }
     Ok(value)
 }

@@ -54,7 +54,7 @@ HTTP responses, including static files and streaming upstream proxies.
   variants.
 - [x] Add an `auto` runtime mode: prefer a successfully probed `io_uring` on
   Linux, fall back to `epoll`, and select `kqueue` on macOS/BSD.
-- [ ] Validate runtime-specific configuration at load time and reject invalid
+- [x] Validate runtime-specific configuration at load time and reject invalid
   queue/buffer sizes with actionable errors.
 - [x] Use one listener per unique address in each worker. Every child creates
   its own nonblocking sockets after `fork`, with `SO_REUSEADDR` and
