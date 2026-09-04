@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Using another proxy? | Thwip</title>
+    <link rel="stylesheet" href="/index.css?v=29">
+      <script src="/docs/docs.js?v=2" defer></script>
+  </head>
+  <body class="docs">
+    <header>
+      <a href="/"><img src="/logo.png" alt="Thwip"></a><a href="/">Home</a>
+    </header>
+    <aside>
+      <span>Documentation</span>
+      <nav>
+        <a href="/docs/?v=31">Overview</a>
+        <div class="subnav">
+          <a href="/docs/?v=31#what-is-thwip">What is Thwip?</a>
+          <a href="/docs/?v=31#why-thwip">Why Thwip?</a>
+          <a href="/docs/?v=31#pronunciation">Pronunciation</a>
+          <a href="/docs/?v=31#getting-started">Getting started</a>
+          <a href="/docs/roadmap/?v=31">Feature roadmap</a>
+        </div>
+        <a href="/docs/runtime/?v=31">Runtime</a>
+        <a href="/docs/workers/?v=31">Workers &amp; limits</a>
+        <a href="/docs/servers/?v=31">Servers &amp; routing</a>
+        <a href="/docs/actions/?v=31">Actions</a>
+        <a href="/docs/upstreams/?v=31">Upstreams</a>
+        <a href="/docs/examples/?v=31">Use cases</a>
+        <a aria-current="page" href="/docs/migration/?v=31">Using another proxy?</a>
+        <div class="subnav">
+          <a href="#migration-skill">Migration skill</a>
+          <a href="#warnings">Migration warnings</a>
+        </div>
+      </nav>
+    </aside>
+    <main>
+      <p class="eyebrow">Overview / Migration</p>
+      <h1>Using another proxy?</h1>
+      <p class="intro">Use the Thwip migration skill to turn supported proxy configuration into a candidate TOML file, while preserving a clear list of behavior that needs manual work or is not supported yet.</p>
+
+      <section id="migration-skill">
+        <h2>Configuration migration skill</h2>
+        <p>Give the skill an Nginx, Caddy, HAProxy, or similar proxy configuration. It maps straightforward listeners, host names, exact/prefix routes, static roots, direct HTTP upstreams, and weighted upstream groups into Thwip configuration.</p>
+        <p>It does not guess at missing equivalents. The result always separates the candidate configuration from the decisions that still need attention.</p>
+      </section>
+
+      <section id="warnings">
+        <h2>Migration warnings</h2>
+        <p>The skill calls out every directive that cannot be represented safely. This includes TLS and HTTPS upstreams, regex routes, rewrites, PHP/FastCGI, WebSockets, UDP, advanced load balancing, retries, health checks, header rules, caching, compression, rate limits, and keep-alive- or chunked-body-dependent behavior.</p>
+        <p>For each warning it states whether you should preserve the existing proxy in front of Thwip, simplify the configuration, or wait for a roadmap feature. A partially migrated file is never presented as an equivalent replacement.</p>
+        <div class="skill-document">
+          <div class="skill-document-header">
+            <span>SKILL.md</span>
+            <div class="skill-actions">
+              <button class="copy-button" type="button" data-copy-skill>Copy Markdown</button>
+              <a href="/docs/migration/SKILL.md?v=2" download>Download</a>
+            </div>
+          </div>
+          <article class="skill-rendered" data-skill-source aria-live="polite">Loading SKILL.md…</article>
+          <span class="copy-status" data-copy-status aria-live="polite"></span>
+        </div>
+      </section>
+    </main>
+    <footer class="doc-pagination">
+      <a href="/docs/?v=31"><small>Parent</small>&larr; Overview</a>
+      <a href="/docs/roadmap/?v=31"><small>Next</small>Feature roadmap &rarr;</a>
+    </footer>
+    <script>
+      const source = document.querySelector("[data-skill-source]");
+      const status = document.querySelector("[data-copy-status]");
+      const button = document.querySelector("[data-copy-skill]");
+
+      function escapeHtml(value) {
+        return value.replace(/[&<>"']/g, (character) => ({
+          "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+        })[character]);
+      }
+
+      function inlineMarkdown(value) {
+        return escapeHtml(value)
+          .replace(/`([^`]+)`/g, "<code>$1</code>")
+          .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+      }
+
+      function renderMarkdown(markdown) {
+        const lines = markdown.replace(/^---[\s\S]*?---\s*/, "").trim().split("\n");
+        const output = [];
+
+        for (let index = 0; index < lines.length;) {
+          const line = lines[index];
+          if (!line.trim()) { index += 1; continue; }
+
+          const heading = line.match(/^(#{1,3})\s+(.+)/);
+          if (heading) {
+            const level = heading[1].length;
+            output.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`);
+            index += 1;
+            continue;
+          }
+
+          const fence = line.match(/^```([\w-]*)\s*$/);
+          if (fence) {
+            const language = fence[1];
+            const code = [];
+            index += 1;
+            while (index < lines.length && !/^```\s*$/.test(lines[index])) code.push(lines[index++]);
+            if (index < lines.length) index += 1;
+            const className = language ? ` class="language-${escapeHtml(language)}"` : "";
+            output.push(`<pre><code${className}>${escapeHtml(code.join("\n"))}</code></pre>`);
+            continue;
+          }
+
+          if (/^\|/.test(line)) {
+            const rows = [];
+            while (index < lines.length && /^\|/.test(lines[index])) rows.push(lines[index++]);
+            const cells = (row) => row.split("|").slice(1, -1).map((cell) => inlineMarkdown(cell.trim()));
+            const header = cells(rows[0]);
+            const body = rows.slice(2).map((row) => `<tr>${cells(row).map((cell) => `<td>${cell}</td>`).join("")}</tr>`).join("");
+            output.push(`<div class="table-wrap"><table><thead><tr>${header.map((cell) => `<th>${cell}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table></div>`);
+            continue;
+          }
+
+          if (/^[-*]\s+/.test(line) || /^\d+\.\s+/.test(line)) {
+            const ordered = /^\d+\.\s+/.test(line);
+            const items = [];
+            const pattern = ordered ? /^\d+\.\s+(.+)/ : /^[-*]\s+(.+)/;
+            while (index < lines.length && pattern.test(lines[index])) items.push(pattern.exec(lines[index++])[1]);
+            const tag = ordered ? "ol" : "ul";
+            output.push(`<${tag}>${items.map((item) => `<li>${inlineMarkdown(item)}</li>`).join("")}</${tag}>`);
+            continue;
+          }
+
+          const paragraph = [];
+          while (index < lines.length && lines[index].trim() && !/^(#{1,3})\s+|^\||^[-*]\s+|^\d+\.\s+/.test(lines[index])) paragraph.push(lines[index++]);
+          output.push(`<p>${inlineMarkdown(paragraph.join(" "))}</p>`);
+        }
+        return output.join("\n");
+      }
+
+      fetch("/docs/migration/SKILL.md?v=2")
+        .then((response) => {
+          if (!response.ok) throw new Error("Skill source could not be loaded.");
+          return response.text();
+        })
+        .then((text) => {
+          source.dataset.skillMarkdown = text;
+          source.innerHTML = renderMarkdown(text);
+          window.thwipEnhanceCodeExamples?.();
+        })
+        .catch((error) => { source.textContent = error.message; });
+
+      button.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(source.dataset.skillMarkdown);
+          status.textContent = "Copied.";
+        } catch {
+          status.textContent = "Copy is unavailable; use Download SKILL.md.";
+        }
+      });
+    </script>
+  </body>
+</html>

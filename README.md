@@ -106,6 +106,11 @@ HTTP responses, including static files and streaming upstream proxies.
   selection.
 - [x] Add SIGINT/SIGTERM master-to-worker shutdown and response draining.
 - [x] Enforce a configurable graceful-shutdown drain deadline.
+- [ ] Add transactional hot reload through generation-based worker replacement,
+  with the existing generation retained when validation or startup fails.
+- [ ] Add a `thwip_ctl` terminal application over a permission-restricted Unix
+  control socket for validation, reload, status, worker, metrics, drain, and
+  stop operations.
 - [x] Add key-value lifecycle logs, per-worker traffic/error counters, and a
   final shutdown metrics report.
 - [x] Restart crashed workers with exponential backoff capped at ten seconds;

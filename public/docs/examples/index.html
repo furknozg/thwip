@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>
+      Use cases | Thwip
+    </title>
+    <link rel="stylesheet" href="/index.css?v=29">
+      <script src="/docs/docs.js?v=2" defer></script>
+  </head>
+  <body class="docs">
+    <header>
+      <a href="/"><img src="/logo.png" alt="Thwip"></a><a href="/">Home</a>
+    </header>
+    <aside>
+      <span>Documentation</span>
+      <nav>
+        <a href="/docs/?v=31">Overview</a><a href="/docs/runtime/?v=31">Runtime</a><a href="/docs/workers/?v=31">Workers &amp; limits</a><a href="/docs/servers/?v=31">Servers &amp; routing</a><a href="/docs/actions/?v=31">Actions</a><a href="/docs/upstreams/?v=31">Upstreams</a><a aria-current="page" href="/docs/examples/?v=31">Use cases</a>
+        <div class="subnav">
+          <a href="#static-site">Static site</a><a href="#balanced-api">Balanced API</a><a href="#virtual-hosts">Virtual hosts</a><a href="#linux-uring">Linux io_uring</a>
+        </div>
+      <a href="/docs/migration/?v=31">Using another proxy?</a></nav>
+    </aside>
+    <main>
+      <p class="eyebrow">
+        Configuration / Recipes
+      </p>
+      <h1>
+        Use cases
+      </h1>
+      <p class="intro">
+        Complete starting points for common Thwip deployments. Adjust addresses, paths, and limits for your host.
+      </p>
+      <section id="static-site">
+        <h2>
+          Static site with health check
+        </h2>
+        <pre><code>worker_count = 2
+[runtime]
+type = "auto"
+
+[[http.servers]]
+listen = "0.0.0.0:8080"
+
+[[http.servers.locations]]
+matcher = { type = "exact", path = "/health" }
+action = { type = "response", status = 200, body = "OK" }
+
+[[http.servers.locations]]
+matcher = { type = "prefix", path = "/" }
+action = { type = "static", directory = "./public" }</code></pre>
+        <p>
+          Use this for documentation, a landing page, or frontend assets. Exact matching ensures the health response wins over the root prefix.
+        </p>
+      </section>
+      <section id="balanced-api">
+        <h2>
+          Static frontend with balanced API
+        </h2>
+        <pre><code>worker_count = 4
+[runtime]
+type = "auto"
+
+[upstreams.api]
+policy = "weighted_round_robin"
+servers = [
+  { url = "http://127.0.0.1:9001", weight = 2 },
+  { url = "http://127.0.0.1:9002", weight = 1 },
+]
+
+[[http.servers]]
+listen = "0.0.0.0:8080"
+server_name = "example.test"
+
+[[http.servers.locations]]
+matcher = { type = "prefix", path = "/api" }
+action = { type = "proxy", upstream_group = "api" }
+
+[[http.servers.locations]]
+matcher = { type = "prefix", path = "/" }
+action = { type = "static", directory = "./public" }</code></pre>
+        <p>
+          Use this when one process serves frontend files and forwards API traffic to multiple application instances.
+        </p>
+      </section>
+      <section id="virtual-hosts">
+        <h2>
+          Two virtual hosts on one port
+        </h2>
+        <pre><code>[[http.servers]]
+listen = "0.0.0.0:8080"
+server_name = "www.example.test"
+[[http.servers.locations]]
+matcher = { type = "prefix", path = "/" }
+action = { type = "static", directory = "./public" }
+
+[[http.servers]]
+listen = "0.0.0.0:8080"
+server_name = "api.example.test"
+[[http.servers.locations]]
+matcher = { type = "prefix", path = "/" }
+action = { type = "proxy", upstream = "http://127.0.0.1:9000" }</code></pre>
+        <p>
+          Use this for host-based separation without opening another listening port. The first entry is also the unmatched-host fallback.
+        </p>
+      </section>
+      <section id="linux-uring">
+        <h2>
+          Explicit Linux io_uring
+        </h2>
+        <pre><code>worker_count = 4
+[runtime]
+type = "io_uring"
+sq_entries = 4096
+cq_entries = 8192
+buf_ring_size = 16384
+buf_size = 8192</code></pre>
+        <p>
+          Use explicit mode only after verifying the Linux kernel and environment support the required operations. Use auto when fallback is desirable.
+        </p>
+      </section>
+      <section>
+        <h2>
+          Repository examples
+        </h2>
+        <p>
+          The source tree also contains validated files under <code>examples/config/</code>: minimal response, static site, direct proxy, round robin, load balancing, virtual hosts, mixed routes, and each runtime.
+        </p>
+      </section>
+    </main>
+    <footer class="doc-pagination">
+      <a href="/docs/upstreams/?v=31"><small>Previous</small>&larr; Upstreams</a><a href="/docs/?v=31"><small>Finished</small>Back to overview &rarr;</a>
+    </footer>
+  </body>
+</html>

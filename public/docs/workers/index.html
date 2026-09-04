@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>
+      Workers and limits | Thwip
+    </title>
+    <link rel="stylesheet" href="/index.css?v=29">
+      <script src="/docs/docs.js?v=2" defer></script>
+  </head>
+  <body class="docs">
+    <header>
+      <a href="/"><img src="/logo.png" alt="Thwip"></a><a href="/">Home</a>
+    </header>
+    <aside>
+      <span>Documentation</span>
+      <nav>
+        <a href="/docs/?v=31">Overview</a><a href="/docs/runtime/?v=31">Runtime</a><a aria-current="page" href="/docs/workers/?v=31">Workers &amp; limits</a>
+        <div class="subnav">
+          <a href="#processes">Processes</a><a href="#limits">Limits</a><a href="#timeouts">Proxy timeouts</a><a href="#dns">DNS</a>
+        </div>
+        <a href="/docs/servers/?v=31">Servers &amp; routing</a><a href="/docs/actions/?v=31">Actions</a><a href="/docs/upstreams/?v=31">Upstreams</a><a href="/docs/examples/?v=31">Use cases</a>
+      <a href="/docs/migration/?v=31">Using another proxy?</a></nav>
+    </aside>
+    <main>
+      <p class="eyebrow">
+        Configuration / Capacity
+      </p>
+      <h1>
+        Workers &amp; limits
+      </h1>
+      <p class="intro">
+        Control process count, connection memory, shutdown, upstream deadlines, and resolution.
+      </p>
+      <section id="processes">
+        <h2>
+          Processes
+        </h2>
+        <pre><code>worker_count = 4</code></pre>
+        <p>
+          The default is the logical CPU count. Each process owns its event loop and connection state; the kernel distributes new connections through <code>SO_REUSEPORT</code>. Use one while debugging, then tune production counts with measurements.
+        </p>
+      </section>
+      <section id="limits">
+        <h2>
+          Per-worker limits
+        </h2>
+        <pre><code>[worker]
+max_connections = 1024
+max_read_buffer_size = 65536
+max_write_buffer_size = 8388608
+idle_timeout_ms = 30000
+drain_timeout_ms = 10000</code></pre>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>
+                  Key
+                </th>
+                <th>
+                  Purpose
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <code>max_connections</code>
+                </td>
+                <td>
+                  Concurrent clients tracked by each worker.
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <code>max_read_buffer_size</code>
+                </td>
+                <td>
+                  Maximum accumulated request bytes per connection.
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <code>max_write_buffer_size</code>
+                </td>
+                <td>
+                  Maximum queued response bytes per connection; bounds slow-reader memory.
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <code>idle_timeout_ms</code>
+                </td>
+                <td>
+                  Close inactive connections after this interval.
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <code>drain_timeout_ms</code>
+                </td>
+                <td>
+                  Allow active work this long during graceful shutdown.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          All values must exceed zero. The approximate total connection ceiling is <code>worker_count × max_connections</code>.
+        </p>
+      </section>
+      <section id="timeouts">
+        <h2>
+          Proxy deadlines
+        </h2>
+        <pre><code>[proxy]
+connect_timeout_ms = 3000
+write_timeout_ms = 30000
+read_timeout_ms = 30000</code></pre>
+        <p>
+          These independently bound connecting to an upstream, forwarding the request, and receiving its response. All are milliseconds and must exceed zero.
+        </p>
+      </section>
+      <section id="dns">
+        <h2>
+          DNS
+        </h2>
+        <pre><code>[dns]
+resolver_threads = 2
+timeout_ms = 3000</code></pre>
+        <p>
+          Resolution runs outside the socket loop. The thread count and lookup deadline must exceed zero. Multiple DNS addresses are connection fallbacks, not a balancing policy.
+        </p>
+      </section>
+    </main>
+    <footer class="doc-pagination">
+      <a href="/docs/runtime/?v=31"><small>Previous</small>&larr; Runtime</a><a href="/docs/servers/?v=31"><small>Next</small>Servers &amp; routing &rarr;</a>
+    </footer>
+  </body>
+</html>

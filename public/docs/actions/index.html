@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>
+      Actions | Thwip
+    </title>
+    <link rel="stylesheet" href="/index.css?v=29">
+      <script src="/docs/docs.js?v=2" defer></script>
+  </head>
+  <body class="docs">
+    <header>
+      <a href="/"><img src="/logo.png" alt="Thwip"></a><a href="/">Home</a>
+    </header>
+    <aside>
+      <span>Documentation</span>
+      <nav>
+        <a href="/docs/?v=31">Overview</a><a href="/docs/runtime/?v=31">Runtime</a><a href="/docs/workers/?v=31">Workers &amp; limits</a><a href="/docs/servers/?v=31">Servers &amp; routing</a><a aria-current="page" href="/docs/actions/?v=31">Actions</a>
+        <div class="subnav">
+          <a href="#response">Response</a><a href="#static">Static files</a><a href="#proxy">Proxy</a><a href="#requests">Request behavior</a>
+        </div>
+        <a href="/docs/upstreams/?v=31">Upstreams</a><a href="/docs/examples/?v=31">Use cases</a>
+      <a href="/docs/migration/?v=31">Using another proxy?</a></nav>
+    </aside>
+    <main>
+      <p class="eyebrow">
+        Configuration / HTTP
+      </p>
+      <h1>
+        Actions
+      </h1>
+      <p class="intro">
+        Every location ends in exactly one response, static-file, or proxy action.
+      </p>
+      <section id="response">
+        <h2>
+          Fixed response
+        </h2>
+        <pre><code>action = { type = "response", status = 200, body = "OK" }</code></pre>
+        <p>
+          Returns the configured HTTP status and text body without filesystem or upstream work. Use it for health checks, simple diagnostics, or temporary responses.
+        </p>
+      </section>
+      <section id="static">
+        <h2>
+          Static files
+        </h2>
+        <pre><code>action = { type = "static", directory = "./public" }</code></pre>
+        <p>
+          The directory is resolved from the process working directory. Thwip serves <code>GET</code> and <code>HEAD</code>, removes the query before resolving the path, prevents traversal outside the configured root, and maps a directory URL such as <code>/docs/</code> to <code>docs/index.html</code>.
+        </p>
+        <p>
+          Responses use MIME detection, <code>ETag</code>/<code>If-None-Match</code>, <code>Cache-Control: public, max-age=3600</code>, and one byte range. Large files are streamed using bounded 64 KiB chunks instead of being loaded in full.
+        </p>
+        <div class="note">
+          <p>
+            There is no PHP runtime. <code>index.php</code> is not selected as an index and would only be returned as a static file when explicitly requested.
+          </p>
+        </div>
+      </section>
+      <section id="proxy">
+        <h2>
+          Proxy: direct endpoint
+        </h2>
+        <pre><code>action = { type = "proxy", upstream = "http://127.0.0.1:9000" }</code></pre>
+        <p>
+          Use this shorthand for one stable destination. Current upstream transport is plaintext <code>http://</code>; upstream HTTPS is not implemented.
+        </p>
+      </section>
+      <section>
+        <h2>
+          Proxy: named group
+        </h2>
+        <pre><code>action = { type = "proxy", upstream_group = "api" }</code></pre>
+        <p>
+          Use a named root-level group when several routes share endpoints or when load-balancing settings should have one source of truth.
+        </p>
+      </section>
+      <section>
+        <h2>
+          Proxy: route-local pool
+        </h2>
+        <pre><code>[http.servers.locations.action]
+type = "proxy"
+policy = "round_robin"
+upstreams = [
+  { url = "http://127.0.0.1:9001" },
+  { url = "http://127.0.0.1:9002", weight = 2 },
+]</code></pre>
+        <p>
+          Use inline endpoints for a pool that belongs to one route. A proxy action must specify exactly one of <code>upstream</code>, <code>upstream_group</code>, or <code>upstreams</code>.
+        </p>
+      </section>
+      <section id="requests">
+        <h2>
+          Request behavior
+        </h2>
+        <p>
+          Proxying supports request bodies framed with <code>Content-Length</code> and rejects unsupported transfer encodings. Hop-by-hop headers are removed, the upstream host is set for the selected target, and connection-close behavior remains explicit.
+        </p>
+      </section>
+    </main>
+    <footer class="doc-pagination">
+      <a href="/docs/servers/?v=31"><small>Previous</small>&larr; Servers &amp; routing</a><a href="/docs/upstreams/?v=31"><small>Next</small>Upstreams &rarr;</a>
+    </footer>
+  </body>
+</html>

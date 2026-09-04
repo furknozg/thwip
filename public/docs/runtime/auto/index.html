@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>
+      Auto runtime | Thwip
+    </title>
+    <link rel="stylesheet" href="/index.css?v=29">
+      <script src="/docs/docs.js?v=2" defer></script>
+  </head>
+  <body class="docs">
+    <header>
+      <a href="/"><img src="/logo.png" alt="Thwip"></a><a href="/">Home</a>
+    </header>
+    <aside>
+      <span>Documentation</span>
+      <nav>
+        <a href="/docs/?v=31">Overview</a><a href="/docs/runtime/?v=31">Runtime</a>
+        <div class="subnav">
+          <a aria-current="page" href="/docs/runtime/auto/?v=31">Auto</a><a href="/docs/runtime/epoll/?v=31">Epoll</a><a href="/docs/runtime/kqueue/?v=31">Kqueue</a><a href="/docs/runtime/io-uring/?v=31">io_uring</a>
+        </div>
+        <a href="/docs/workers/?v=31">Workers &amp; limits</a><a href="/docs/servers/?v=31">Servers &amp; routing</a><a href="/docs/actions/?v=31">Actions</a><a href="/docs/upstreams/?v=31">Upstreams</a><a href="/docs/examples/?v=31">Use cases</a>
+      <a href="/docs/migration/?v=31">Using another proxy?</a></nav>
+    </aside>
+    <main>
+      <p class="eyebrow">
+        Runtime / Type
+      </p>
+      <h1>
+        Auto
+      </h1>
+      <p class="intro">
+        Select the best supported runtime at worker startup while retaining a safe platform fallback.
+      </p>
+      <section>
+        <h2>
+          Configuration
+        </h2>
+        <pre><code>[runtime]
+type = "auto"
+max_events = 1024
+sq_entries = 4096
+cq_entries = 8192
+buf_ring_size = 16384
+buf_size = 8192</code></pre>
+        <p>
+          All fields are optional after <code>type</code>. Readiness settings apply if epoll or kqueue is selected; queue and buffer settings apply if io_uring is selected.
+        </p>
+      </section>
+      <section>
+        <h2>
+          Selection behavior
+        </h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>
+                  Host
+                </th>
+                <th>
+                  Result
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  Linux with required io_uring capabilities
+                </td>
+                <td>
+                  io_uring
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  Linux without required capabilities
+                </td>
+                <td>
+                  Epoll, with the fallback reason logged
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  macOS or BSD
+                </td>
+                <td>
+                  Kqueue
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          Linux probing checks required operations and provided-buffer registration. The decision is made once during worker startup.
+        </p>
+      </section>
+      <section>
+        <h2>
+          Use auto when
+        </h2>
+        <ul>
+          <li>
+            the same configuration is deployed across Linux and BSD-family systems;
+          </li>
+          <li>
+            io_uring is preferred but not mandatory;
+          </li>
+          <li>
+            graceful fallback is more important than enforcing one driver.
+          </li>
+        </ul>
+        <div class="note">
+          <p>
+            Auto must be explicit. Omitting <code>[runtime]</code> currently defaults to epoll.
+          </p>
+        </div>
+      </section>
+    </main>
+    <footer class="doc-pagination">
+      <a href="/docs/runtime/?v=31"><small>Previous</small>&larr; Runtime overview</a><a href="/docs/runtime/epoll/?v=31"><small>Next</small>Epoll &rarr;</a>
+    </footer>
+  </body>
+</html>

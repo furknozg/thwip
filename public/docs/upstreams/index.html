@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>
+      Upstreams | Thwip
+    </title>
+    <link rel="stylesheet" href="/index.css?v=29">
+      <script src="/docs/docs.js?v=2" defer></script>
+  </head>
+  <body class="docs">
+    <header>
+      <a href="/"><img src="/logo.png" alt="Thwip"></a><a href="/">Home</a>
+    </header>
+    <aside>
+      <span>Documentation</span>
+      <nav>
+        <a href="/docs/?v=31">Overview</a><a href="/docs/runtime/?v=31">Runtime</a><a href="/docs/workers/?v=31">Workers &amp; limits</a><a href="/docs/servers/?v=31">Servers &amp; routing</a><a href="/docs/actions/?v=31">Actions</a><a aria-current="page" href="/docs/upstreams/?v=31">Upstreams</a>
+        <div class="subnav">
+          <a href="#groups">Named groups</a><a href="#policies">Policies</a><a href="#state">Selection state</a><a href="#dns-fallback">DNS fallback</a>
+        </div>
+        <a href="/docs/examples/?v=31">Use cases</a>
+      <a href="/docs/migration/?v=31">Using another proxy?</a></nav>
+    </aside>
+    <main>
+      <p class="eyebrow">
+        Configuration / Proxy
+      </p>
+      <h1>
+        Upstreams
+      </h1>
+      <p class="intro">
+        Groups give multiple proxy routes a reusable set of backend servers and a balancing policy.
+      </p>
+      <section id="groups">
+        <h2>
+          Named group
+        </h2>
+        <pre><code>[upstreams.api]
+policy = "weighted_round_robin"
+servers = [
+  { url = "http://127.0.0.1:9001", weight = 2 },
+  { url = "http://127.0.0.1:9002", weight = 1 },
+]
+
+[[http.servers.locations]]
+matcher = { type = "prefix", path = "/api" }
+action = { type = "proxy", upstream_group = "api" }</code></pre>
+        <p>
+          The table key (<code>api</code>) is the group name. Names and endpoint URLs cannot be empty, every group needs at least one server, and each weight must exceed zero. An omitted weight is <code>1</code>.
+        </p>
+      </section>
+      <section id="policies">
+        <h2>
+          Policies
+        </h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>
+                  Policy
+                </th>
+                <th>
+                  Behavior
+                </th>
+                <th>
+                  Use case
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <code>round_robin</code>
+                </td>
+                <td>
+                  Visits every configured endpoint in sequence.
+                </td>
+                <td>
+                  Backends with similar capacity.
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <code>weighted_round_robin</code>
+                </td>
+                <td>
+                  Selects endpoints proportionally to their weights.
+                </td>
+                <td>
+                  Mixed-capacity backends or gradual traffic shifts.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          <code>weighted_round_robin</code> is the default. A 2:1 pair targets the first endpoint approximately twice for each selection of the second.
+        </p>
+      </section>
+      <section id="state">
+        <h2>
+          Where state lives
+        </h2>
+        <p>
+          Named routes referencing the same group share a selection cursor within a worker. Each worker process has its own cursor, so balancing is not a globally synchronized request counter. In practice, incoming TCP connections are first distributed across workers by the kernel, and each worker then selects an upstream.
+        </p>
+      </section>
+      <section id="dns-fallback">
+        <h2>
+          DNS and failures
+        </h2>
+        <p>
+          Endpoint selection happens before hostname resolution. If a selected hostname has several addresses, Thwip can try those addresses as connection fallbacks; it does not treat them as independently weighted upstreams. Configure independent endpoints when their traffic share must be explicit.
+        </p>
+      </section>
+      <section>
+        <h2>
+          Choosing group scope
+        </h2>
+        <ul>
+          <li>
+            Use a <strong>named group</strong> when routes share backend identity and balancing state.
+          </li>
+          <li>
+            Use <strong>inline upstreams</strong> when a pool is private to one route.
+          </li>
+          <li>
+            Use a direct <strong>upstream</strong> when no balancing is needed.
+          </li>
+        </ul>
+      </section>
+    </main>
+    <footer class="doc-pagination">
+      <a href="/docs/actions/?v=31"><small>Previous</small>&larr; Actions</a><a href="/docs/examples/?v=31"><small>Next</small>Use cases &rarr;</a>
+    </footer>
+  </body>
+</html>

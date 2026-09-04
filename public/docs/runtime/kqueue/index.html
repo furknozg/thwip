@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>
+      Kqueue runtime | Thwip
+    </title>
+    <link rel="stylesheet" href="/index.css?v=29">
+      <script src="/docs/docs.js?v=2" defer></script>
+  </head>
+  <body class="docs">
+    <header>
+      <a href="/"><img src="/logo.png" alt="Thwip"></a><a href="/">Home</a>
+    </header>
+    <aside>
+      <span>Documentation</span>
+      <nav>
+        <a href="/docs/?v=31">Overview</a><a href="/docs/runtime/?v=31">Runtime</a>
+        <div class="subnav">
+          <a href="/docs/runtime/auto/?v=31">Auto</a><a href="/docs/runtime/epoll/?v=31">Epoll</a><a aria-current="page" href="/docs/runtime/kqueue/?v=31">Kqueue</a><a href="/docs/runtime/io-uring/?v=31">io_uring</a>
+        </div>
+        <a href="/docs/workers/?v=31">Workers &amp; limits</a><a href="/docs/servers/?v=31">Servers &amp; routing</a><a href="/docs/actions/?v=31">Actions</a><a href="/docs/upstreams/?v=31">Upstreams</a><a href="/docs/examples/?v=31">Use cases</a>
+      <a href="/docs/migration/?v=31">Using another proxy?</a></nav>
+    </aside>
+    <main>
+      <p class="eyebrow">
+        Runtime / Type
+      </p>
+      <h1>
+        Kqueue
+      </h1>
+      <p class="intro">
+        The readiness runtime for macOS and BSD systems.
+      </p>
+      <section>
+        <h2>
+          Configuration
+        </h2>
+        <pre><code>[runtime]
+type = "kqueue"
+max_events = 1024</code></pre>
+        <p>
+          <code>max_events</code> defaults to 1024 and must exceed zero. It determines the maximum event batch collected from kqueue.
+        </p>
+      </section>
+      <section>
+        <h2>
+          How it differs
+        </h2>
+        <p>
+          Kqueue and epoll share Thwip’s readiness-worker lifecycle, HTTP parsing, routing, buffering, and timeout logic. Their platform drivers differ in registration and event translation: kqueue uses filters and flags, while epoll uses Linux event masks. Both normalize those events before connection handling.
+        </p>
+      </section>
+      <section>
+        <h2>
+          Use kqueue when
+        </h2>
+        <ul>
+          <li>
+            running Thwip on macOS during local development;
+          </li>
+          <li>
+            deploying to a supported BSD system;
+          </li>
+          <li>
+            testing the readiness implementation without Linux.
+          </li>
+        </ul>
+        <p>
+          CPU affinity is attempted where supported but is non-fatal on macOS/BSD, where unavailable affinity is logged instead of preventing the worker from starting.
+        </p>
+      </section>
+    </main>
+    <footer class="doc-pagination">
+      <a href="/docs/runtime/epoll/?v=31"><small>Previous</small>&larr; Epoll</a><a href="/docs/runtime/io-uring/?v=31"><small>Next</small>io_uring &rarr;</a>
+    </footer>
+  </body>
+</html>

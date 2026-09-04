@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>
+      Feature roadmap | Thwip
+    </title>
+    <link rel="stylesheet" href="/index.css?v=29">
+      <script src="/docs/docs.js?v=2" defer></script>
+  </head>
+  <body class="docs">
+    <header>
+      <a href="/"><img src="/logo.png" alt="Thwip"></a><a href="/">Home</a>
+    </header>
+    <aside>
+      <span>Documentation</span>
+      <nav>
+        <a href="/docs/?v=31">Overview</a>
+        <div class="subnav">
+          <a href="/docs/?v=31#why-thwip">Why Thwip?</a><a href="/docs/?v=31#pronunciation">Pronunciation</a><a href="/docs/?v=31#getting-started">Getting started</a><a aria-current="page" href="/docs/roadmap/?v=31">Feature roadmap</a>
+          <div class="subnav">
+            <a href="#tls">TLS</a><a href="#benchmarking">Benchmarking</a><a href="#control-plane">Hot reload &amp; thwip_ctl</a><a href="#http">HTTP lifecycle</a><a href="#regex-routing">Regex routing</a><a href="#protocols">Secondary protocols</a><a href="#proxy">Proxy resilience</a><a href="#runtime">Runtime control</a><a href="#configuration">Configuration</a><a href="#uring">io_uring</a>
+          </div>
+        </div>
+        <a href="/docs/runtime/?v=31">Runtime</a><a href="/docs/workers/?v=31">Workers &amp; limits</a><a href="/docs/servers/?v=31">Servers &amp; routing</a><a href="/docs/actions/?v=31">Actions</a><a href="/docs/upstreams/?v=31">Upstreams</a><a href="/docs/examples/?v=31">Use cases</a>
+      <a href="/docs/migration/?v=31">Using another proxy?</a></nav>
+    </aside>
+    <main>
+      <p class="eyebrow">
+        Overview / Roadmap
+      </p>
+      <h1>
+        Feature roadmap
+      </h1>
+      <p class="intro">
+        The remaining product work from the project roadmap, excluding test-only and CI tasks. These items describe direction, not currently available behavior.
+      </p>
+      <section id="tls">
+        <h2>
+          TLS
+        </h2>
+        <p>
+          Thwip currently serves plaintext HTTP and connects to plaintext <code>http://</code> upstreams. TLS needs to cover two distinct roles: terminating HTTPS from clients and establishing HTTPS connections to upstream services.
+        </p>
+        <h3>
+          Client TLS termination
+        </h3>
+        <p>
+          A server will need certificate and private-key configuration, protocol and cipher policy, and a way to select certificates during SNI. The listener still owns the accepted socket, while each connection owns its TLS session and handshake state. HTTP parsing begins only after the handshake has produced decrypted application bytes.
+        </p>
+        <h3>
+          Runtime integration
+        </h3>
+        <p>
+          Epoll and kqueue will drive nonblocking handshakes whenever the TLS engine requests more readable or writable socket progress. io_uring will submit network receives and sends around the same runtime-neutral TLS session; cryptographic state remains connection-owned rather than ring-owned. This keeps certificates, routing, and HTTP behavior consistent across drivers.
+        </p>
+        <h3>
+          HTTPS upstreams
+        </h3>
+        <p>
+          Upstream TLS also requires hostname verification, trust-store configuration, SNI, handshake deadlines, and clear separation between DNS, TCP-connect, TLS-handshake, request-write, and response-read failures. Connection pooling should follow TLS so established secure sessions can be reused safely.
+        </p>
+        <div class="note">
+          <p>
+            Likely configuration areas include certificate/key paths per server, minimum TLS version, trust roots for upstreams, verification controls, and a dedicated handshake timeout. Secure defaults should be mandatory; disabling verification should be explicit and difficult to do accidentally.
+          </p>
+        </div>
+      </section>
+      <section id="benchmarking">
+        <h2>
+          Benchmarking
+        </h2>
+        <p>
+          Benchmarking is a primary roadmap feature because Thwip’s platform-specific runtimes exist to pursue practical performance. Results must compare equivalent HTTP behavior and resource limits across epoll, kqueue, and io_uring rather than measuring different feature sets.
+        </p>
+        <h3>
+          Core workloads
+        </h3>
+        <ul>
+          <li>
+            Small fixed responses at high request rates.
+          </li>
+          <li>
+            Small and large static files, including cached, ranged, and streaming responses.
+          </li>
+          <li>
+            Streaming proxy responses with fast and slow clients.
+          </li>
+          <li>
+            Short-lived connections and persistent keep-alive workloads when keep-alive lands.
+          </li>
+          <li>
+            Balanced upstream traffic, upstream latency, and failure scenarios.
+          </li>
+          <li>
+            Connection-limit, queue-saturation, and buffer-starvation behavior under overload.
+          </li>
+        </ul>
+        <h3>
+          Measurements
+        </h3>
+        <p>
+          Every published run should report throughput, median and tail latency, CPU time, context switches, memory high-water mark, open connections, errors, and runtime-specific pressure such as submission occupancy or event-batch saturation. Warm-up, run duration, concurrency, response sizes, worker count, kernel, hardware, compiler profile, and configuration must be recorded alongside results.
+        </p>
+        <h3>
+          Fair comparisons
+        </h3>
+        <p>
+          Runtime comparisons need the same machine, client generator, worker count, socket settings, request mix, and output validation. The load generator should run on separate capacity when possible so it does not compete with Thwip. Multiple runs and variance are required; a single best result is not representative.
+        </p>
+        <div class="note">
+          <p>
+            The intended deliverable is a reproducible benchmark suite plus checked-in configurations and published result snapshots. Optional io_uring operations should be adopted only when those measurements show a meaningful improvement without weakening correctness or portability.
+          </p>
+        </div>
+      </section>
+      <section id="control-plane">
+        <h2>
+          Hot reload &amp; thwip_ctl
+        </h2>
+        <p>
+          After TLS, the primary operational feature is a local control plane that can apply configuration changes without dropping active traffic. A dedicated <code>thwip_ctl</code> terminal application will communicate with the master process over a permission-restricted Unix domain socket.
+        </p>
+        <h3>
+          Transactional hot reload
+        </h3>
+        <p>
+          The master should read and fully validate a candidate configuration before changing live state. It then starts a new worker generation with the new listeners, routes, certificates, and upstream definitions. Only after the new generation reports readiness does the master stop sending work to the old generation and ask it to drain within the configured deadline.
+        </p>
+        <p>
+          If parsing, binding, certificate loading, capability probing, or worker startup fails, the candidate generation is discarded and the existing workers continue serving the previous configuration. Reload must therefore be atomic from an operator’s perspective: either the complete configuration becomes ready or none of it is activated.
+        </p>
+        <h3>
+          thwip_ctl commands
+        </h3>
+        <pre><code>thwip_ctl validate /etc/thwip/thwip.toml
+thwip_ctl reload
+thwip_ctl status
+thwip_ctl workers
+thwip_ctl metrics
+thwip_ctl drain
+thwip_ctl stop</code></pre>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>
+                  Command
+                </th>
+                <th>
+                  Purpose
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <code>validate</code>
+                </td>
+                <td>
+                  Parse and validate a file without changing the running server.
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <code>reload</code>
+                </td>
+                <td>
+                  Request a transactional worker-generation replacement.
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <code>status</code>
+                </td>
+                <td>
+                  Show master identity, uptime, active generation, selected runtimes, and reload state.
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <code>workers</code>
+                </td>
+                <td>
+                  List worker PIDs, generation, health, restart count, and drain state.
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <code>metrics</code>
+                </td>
+                <td>
+                  Read a concise snapshot of per-worker and aggregate counters.
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <code>drain</code>
+                </td>
+                <td>
+                  Stop accepting new traffic and gracefully finish active work.
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <code>stop</code>
+                </td>
+                <td>
+                  Request graceful server shutdown through the master.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <h3>
+          Control safety
+        </h3>
+        <p>
+          The control socket should default to a runtime directory with restrictive filesystem permissions. Requests need a versioned protocol, bounded message sizes, explicit timeouts, structured error responses, and no ability for workers to mutate master state directly. Signals can remain as an emergency compatibility path, while <code>thwip_ctl</code> becomes the observable and scriptable interface.
+        </p>
+      </section>
+      <section id="http">
+        <h2>
+          HTTP lifecycle
+        </h2>
+        <ul>
+          <li>
+            Expose validated request bodies to actions rather than only forwarding them internally.
+          </li>
+          <li>
+            Decode chunked request bodies with bounded memory and correct trailer/framing rules.
+          </li>
+          <li>
+            Add HTTP/1.1 keep-alive and complete request/response framing semantics.
+          </li>
+          <li>
+            Define WebSocket upgrade behavior and other currently unsupported protocol features.
+          </li>
+          <li>
+            Separate header and body limits so large legitimate bodies do not permit oversized request heads.
+          </li>
+        </ul>
+      </section>
+      <section id="regex-routing">
+        <h2>
+          Regex routing
+        </h2>
+        <p>
+          Thwip will add an explicit regular-expression matcher for routes that cannot be expressed as an exact path or a stable prefix. Exact and prefix matching will remain the default because they are easier to understand, faster to evaluate, and sufficient for most proxy layouts.
+        </p>
+        <p>
+          Regex routes should be opt-in and evaluated only after exact and prefix matches. Configuration will need an obvious matcher type, a documented ordering rule for multiple matching expressions, and compile-time validation so an invalid pattern prevents startup rather than failing during a request.
+        </p>
+        <div class="note">
+          <p>
+            Regular expressions can be expensive or surprising when used broadly. The implementation should enforce practical pattern and evaluation limits, avoid unbounded backtracking behavior, and keep captures or rewrite-style transformations out of the first version.
+          </p>
+        </div>
+      </section>
+      <section id="protocols">
+        <h2>
+          Secondary protocols
+        </h2>
+        <h3>
+          WebSockets
+        </h3>
+        <p>
+          WebSocket support begins as an HTTP/1.1 upgrade. Thwip must validate the upgrade handshake, switch the connection out of HTTP request/response mode, and relay frames bidirectionally with bounded buffers, backpressure, idle timeouts, close-frame handling, and half-close/error propagation. The initial goal should be transparent WebSocket proxying rather than interpreting application messages.
+        </p>
+        <h3>
+          UDP proxying
+        </h3>
+        <p>
+          UDP is connectionless and should use a separate datagram listener and action model instead of being forced through the TCP connection abstraction. Workers will need flow tracking keyed by client and destination addresses, bounded per-flow state, idle expiry, datagram-size limits, and a clear policy for upstream selection and response association.
+        </p>
+        <h3>
+          QUIC and HTTP/3
+        </h3>
+        <p>
+          QUIC runs over UDP but adds encrypted connections, streams, congestion control, and transport-level state. HTTP/3 should therefore be treated as a later protocol implementation built on a QUIC library—not as a side effect of adding raw UDP forwarding. Its TLS requirements and lifecycle are substantially different from TCP HTTP.
+        </p>
+        <div class="note">
+          <p>
+            Likely configuration should separate <code>http</code>, <code>stream</code>, and <code>datagram</code> services so protocol-specific limits and routing remain explicit.
+          </p>
+        </div>
+      </section>
+      <section id="proxy">
+        <h2>
+          Proxy resilience
+        </h2>
+        <ul>
+          <li>
+            Validate upstream response framing before relaying it to clients.
+          </li>
+          <li>
+            Pool and reuse upstream connections with bounded per-worker limits.
+          </li>
+          <li>
+            Add retry policy that distinguishes safe retryable failures from requests that may already have reached an upstream.
+          </li>
+          <li>
+            Track passive and active health so unavailable endpoints can leave rotation temporarily.
+          </li>
+          <li>
+            Add HTTPS upstreams through the TLS work described above.
+          </li>
+        </ul>
+        <p>
+          Pooling, retries, and health checks must remain compatible with streaming and backpressure; they should not require buffering entire requests or responses.
+        </p>
+      </section>
+      <section id="runtime">
+        <h2>
+          Runtime control and observability
+        </h2>
+        <ul>
+          <li>
+            Extend the runtime-neutral interface with general-purpose timers and control messages.
+          </li>
+          <li>
+            Expose the selected runtime and automatic-fallback reason as worker metrics.
+          </li>
+          <li>
+            Add more detailed runtime metrics for queue pressure, active operations, buffer use, and wakeups.
+          </li>
+          <li>
+            Add configurable logging controls while retaining structured lifecycle and shutdown reports.
+          </li>
+        </ul>
+      </section>
+      <section id="configuration">
+        <h2>
+          Configuration hardening
+        </h2>
+        <ul>
+          <li>
+            Add an explicit configuration schema version so future changes can fail or migrate predictably.
+          </li>
+          <li>
+            Validate worker count, server names, route paths, response status codes, static directories, and full upstream URL syntax.
+          </li>
+          <li>
+            Add separate request-header and request-body limits.
+          </li>
+          <li>
+            Add TLS and upstream connection-pool settings.
+          </li>
+          <li>
+            Expose logging level and destination controls.
+          </li>
+        </ul>
+      </section>
+      <section id="uring">
+        <h2>
+          Optional io_uring acceleration
+        </h2>
+        <p>
+          After baseline behavior is stable, Thwip can capability-probe optional operations such as <code>recvmsg</code>, zero-copy sends, fixed files, and <code>splice</code>. None should become a baseline requirement: unsupported kernels must retain the current paths, and auto mode must continue to choose a dependable runtime.
+        </p>
+        <p>
+          Adoption should be driven by measured CPU, latency, throughput, queue pressure, and memory behavior rather than the availability of an opcode alone.
+        </p>
+      </section>
+    </main>
+    <footer class="doc-pagination">
+      <a href="/docs/?v=31"><small>Parent</small>&larr; Overview</a><a href="/docs/runtime/?v=31"><small>Next</small>Runtime &rarr;</a>
+    </footer>
+  </body>
+</html>

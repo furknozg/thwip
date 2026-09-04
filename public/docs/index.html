@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Thwip configuration documentation.">
+    <title>
+      Documentation | Thwip
+    </title>
+    <link rel="stylesheet" href="/index.css?v=29">
+      <script src="/docs/docs.js?v=2" defer></script>
+  </head>
+  <body class="docs">
+    <header>
+      <a href="/"><img src="/logo.png" alt="Thwip"></a><a href="/">Home</a>
+    </header>
+    <aside>
+      <span>Documentation</span>
+      <nav>
+        <a aria-current="page" href="/docs/?v=31">Overview</a>
+        <div class="subnav">
+          <a href="#what-is-thwip">What is Thwip?</a><a href="#why-thwip">Why Thwip?</a><a href="#pronunciation">Pronunciation</a><a href="#getting-started">Getting started</a><a href="/docs/roadmap/?v=31">Feature roadmap</a>
+        </div>
+        <a href="/docs/runtime/?v=31">Runtime</a><a href="/docs/workers/?v=31">Workers &amp; limits</a><a href="/docs/servers/?v=31">Servers &amp; routing</a><a href="/docs/actions/?v=31">Actions</a><a href="/docs/upstreams/?v=31">Upstreams</a><a href="/docs/examples/?v=31">Use cases</a>
+      <a href="/docs/migration/?v=31">Using another proxy?</a></nav>
+    </aside>
+    <main>
+      <h1>
+        Documentation
+      </h1>
+      <p class="intro">
+        Configuration reference and practical recipes for running Thwip as an HTTP server and reverse proxy.
+      </p>
+      <section id="what-is-thwip">
+        <h2>
+          What is Thwip?
+        </h2>
+        <p>
+          Thwip is a <strong>Transport-Handling Web Ingress Proxy</strong>: an experimental Unix HTTP server and reverse proxy written in Rust. It is the entry point for web traffic, selecting a virtual host and route before serving a response, static file, or upstream service.
+        </p>
+        <p>
+          Thwip is designed to offer the same clear configuration and behavior across the systems it supports, without pretending every system works in exactly the same way. It uses the capabilities that fit each operating system best, so a portable deployment does not have to settle for a one-size-fits-all performance model.
+        </p>
+        <p>
+          Its design favors small, independent workers and predictable limits over hidden magic. That keeps the server understandable under normal traffic and gives it room to make the most of the machine it is running on when demand increases.
+        </p>
+      </section>
+      <section id="why-thwip">
+        <h2>
+          Why Thwip?
+        </h2>
+        <p>
+          Thwip aims to be portable without reducing every operating system to the same lowest-common-denominator runtime. It keeps HTTP behavior consistent while using the native I/O model that fits each supported system: epoll on Linux, kqueue on macOS and BSD, and io_uring where Linux provides the required capabilities.
+        </p>
+        <p>
+          The goal is to pursue the best practical performance each platform can offer while preserving one configuration model, one routing layer, and explicit worker ownership. Automatic runtime selection makes that portability usable, while explicit runtime modes leave room for measurement and platform-specific tuning.
+        </p>
+      </section>
+      <section id="pronunciation">
+        <h2>
+          How it is pronounced
+        </h2>
+        <p>
+          There is only one correct way to pronounce <strong>Thwip</strong>:
+        </p>
+        <p class="pronunciation-key">
+        <span>/ˈθwɪp/</span> — “thwip,” <span>(onomatopoeia)</span> beginning with the <em>th</em> sound in “thin.”:
+        </p>
+        <div class="sound-recording">
+          <audio controls preload="metadata" aria-label="Play the Thwip web-shooter sound"><source src="/thwip-web-shooter.m4a?v=1" type="audio/mp4">Your browser does not support embedded audio.</audio><small>thwip.m4a — official unofficial pronunciation</small>
+        </div>
+      </section>
+      <section id="getting-started">
+        <h2>
+          Getting started
+        </h2>
+        <pre><code>worker_count = 1
+
+[runtime]
+type = "auto"
+
+[[http.servers]]
+listen = "127.0.0.1:8080"
+
+[[http.servers.locations]]
+matcher = { type = "exact", path = "/health" }
+action = { type = "response", status = 200, body = "OK" }</code></pre>
+        <div class="note">
+          <p>
+            Omitting <code>[runtime]</code> defaults to epoll. Write <code>type = "auto"</code> for platform-aware selection.
+          </p>
+        </div>
+        <p>
+          Moving an existing proxy configuration? Start with <a href="/docs/migration/?v=31">Using another proxy?</a>.
+        </p>
+      </section>
+    </main>
+    <footer class="doc-pagination">
+      <span></span><a href="/docs/roadmap/?v=31"><small>Next</small>Feature roadmap &rarr;</a>
+    </footer>
+  </body>
+</html>

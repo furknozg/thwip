@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>
+      Epoll runtime | Thwip
+    </title>
+    <link rel="stylesheet" href="/index.css?v=29">
+      <script src="/docs/docs.js?v=2" defer></script>
+  </head>
+  <body class="docs">
+    <header>
+      <a href="/"><img src="/logo.png" alt="Thwip"></a><a href="/">Home</a>
+    </header>
+    <aside>
+      <span>Documentation</span>
+      <nav>
+        <a href="/docs/?v=31">Overview</a><a href="/docs/runtime/?v=31">Runtime</a>
+        <div class="subnav">
+          <a href="/docs/runtime/auto/?v=31">Auto</a><a aria-current="page" href="/docs/runtime/epoll/?v=31">Epoll</a><a href="/docs/runtime/kqueue/?v=31">Kqueue</a><a href="/docs/runtime/io-uring/?v=31">io_uring</a>
+        </div>
+        <a href="/docs/workers/?v=31">Workers &amp; limits</a><a href="/docs/servers/?v=31">Servers &amp; routing</a><a href="/docs/actions/?v=31">Actions</a><a href="/docs/upstreams/?v=31">Upstreams</a><a href="/docs/examples/?v=31">Use cases</a>
+      <a href="/docs/migration/?v=31">Using another proxy?</a></nav>
+    </aside>
+    <main>
+      <p class="eyebrow">
+        Runtime / Type
+      </p>
+      <h1>
+        Epoll
+      </h1>
+      <p class="intro">
+        Linux readiness-driven socket handling with explicit connection ownership.
+      </p>
+      <section>
+        <h2>
+          Configuration
+        </h2>
+        <pre><code>[runtime]
+type = "epoll"
+max_events = 1024</code></pre>
+        <p>
+          <code>max_events</code> defaults to 1024 and must exceed zero. It caps the readiness notifications returned in one polling batch, not the total number of connections.
+        </p>
+      </section>
+      <section>
+        <h2>
+          How it behaves
+        </h2>
+        <p>
+          The worker registers listeners and connections with epoll, receives readiness notifications, and performs nonblocking accept, read, and write work. Error, hang-up, and peer half-close flags are handled alongside normal readiness. Connection tokens carry generations so stale events cannot act on a reused slot.
+        </p>
+      </section>
+      <section>
+        <h2>
+          Use epoll when
+        </h2>
+        <ul>
+          <li>
+            deploying explicitly to Linux;
+          </li>
+          <li>
+            supporting a kernel or environment without the required io_uring capabilities;
+          </li>
+          <li>
+            debugging readiness behavior independently of auto probing.
+          </li>
+        </ul>
+        <p>
+          Start with the default event batch. Raise it only after observing sustained batches at the cap; a larger value can increase work per loop turn.
+        </p>
+      </section>
+    </main>
+    <footer class="doc-pagination">
+      <a href="/docs/runtime/auto/?v=31"><small>Previous</small>&larr; Auto</a><a href="/docs/runtime/kqueue/?v=31"><small>Next</small>Kqueue &rarr;</a>
+    </footer>
+  </body>
+</html>

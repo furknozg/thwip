@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>
+      Runtime | Thwip
+    </title>
+    <link rel="stylesheet" href="/index.css?v=29">
+      <script src="/docs/docs.js?v=2" defer></script>
+  </head>
+  <body class="docs">
+    <header>
+      <a href="/"><img src="/logo.png" alt="Thwip"></a><a href="/">Home</a>
+    </header>
+    <aside>
+      <span>Documentation</span>
+      <nav>
+        <a href="/docs/?v=31">Overview</a><a aria-current="page" href="/docs/runtime/?v=31">Runtime</a>
+        <div class="subnav">
+          <a href="/docs/runtime/auto/?v=31">Auto</a><a href="/docs/runtime/epoll/?v=31">Epoll</a><a href="/docs/runtime/kqueue/?v=31">Kqueue</a><a href="/docs/runtime/io-uring/?v=31">io_uring</a>
+        </div>
+        <a href="/docs/workers/?v=31">Workers &amp; limits</a><a href="/docs/servers/?v=31">Servers &amp; routing</a><a href="/docs/actions/?v=31">Actions</a><a href="/docs/upstreams/?v=31">Upstreams</a><a href="/docs/examples/?v=31">Use cases</a>
+      <a href="/docs/migration/?v=31">Using another proxy?</a></nav>
+    </aside>
+    <main>
+      <p class="eyebrow">
+        Configuration / Runtime
+      </p>
+      <h1>
+        Runtime
+      </h1>
+      <p class="intro">
+        The runtime owns socket I/O for each worker. Select it with the tagged <code>[runtime]</code> table.
+      </p>
+      <nav class="section-links" aria-label="Runtime types">
+        <a href="/docs/runtime/auto/?v=31">Auto</a><a href="/docs/runtime/epoll/?v=31">Epoll</a><a href="/docs/runtime/kqueue/?v=31">Kqueue</a><a href="/docs/runtime/io-uring/?v=31">io_uring</a>
+      </nav>
+      <section>
+        <h2>
+          Auto
+        </h2>
+        <pre><code>[runtime]
+type = "auto"
+max_events = 1024
+sq_entries = 4096
+cq_entries = 8192
+buf_ring_size = 16384
+buf_size = 8192</code></pre>
+        <p>
+          On Linux, Thwip probes required io_uring operations and provided-buffer registration. It uses io_uring when supported and logs why it falls back to epoll otherwise. macOS and BSD select kqueue. Use this mode for portable deployments.
+        </p>
+      </section>
+      <section>
+        <h2>
+          Epoll and kqueue
+        </h2>
+        <pre><code># Linux
+[runtime]
+type = "epoll"
+max_events = 1024
+
+# macOS and BSD
+[runtime]
+type = "kqueue"
+max_events = 1024</code></pre>
+        <p>
+          <code>max_events</code> is the maximum readiness notifications collected per polling batch. It defaults to 1024 and must exceed zero.
+        </p>
+      </section>
+      <section>
+        <h2>
+          io_uring
+        </h2>
+        <pre><code>[runtime]
+type = "io_uring"
+sq_entries = 4096
+cq_entries = 8192
+buf_ring_size = 16384
+buf_size = 8192</code></pre>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>
+                  Key
+                </th>
+                <th>
+                  Default
+                </th>
+                <th>
+                  Meaning and constraint
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <code>sq_entries</code>
+                </td>
+                <td>
+                  4096
+                </td>
+                <td>
+                  Submission entries; greater than zero.
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <code>cq_entries</code>
+                </td>
+                <td>
+                  8192
+                </td>
+                <td>
+                  Completion entries; greater than zero.
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <code>buf_ring_size</code>
+                </td>
+                <td>
+                  16384
+                </td>
+                <td>
+                  Provided buffers; power of two from 1 through 32768.
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <code>buf_size</code>
+                </td>
+                <td>
+                  8192 bytes
+                </td>
+                <td>
+                  Each receive buffer; greater than zero.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          Explicit io_uring is Linux-only and fails startup if required capabilities are missing; it does not silently fall back.
+        </p>
+      </section>
+      <section>
+        <h2>
+          Choosing a mode
+        </h2>
+        <ul>
+          <li>
+            <strong>auto:</strong> portable deployment.
+          </li>
+          <li>
+            <strong>epoll:</strong> explicit Linux readiness behavior or older kernels.
+          </li>
+          <li>
+            <strong>kqueue:</strong> explicit macOS/BSD behavior.
+          </li>
+          <li>
+            <strong>io_uring:</strong> a verified Linux host where completion I/O is required.
+          </li>
+        </ul>
+        <div class="note">
+          <p>
+            An omitted runtime currently means epoll, not auto.
+          </p>
+        </div>
+      </section>
+    </main>
+    <footer class="doc-pagination">
+      <a href="/docs/roadmap/?v=31"><small>Previous</small>&larr; Feature roadmap</a><a href="/docs/workers/?v=31"><small>Next</small>Workers &amp; limits &rarr;</a>
+    </footer>
+  </body>
+</html>

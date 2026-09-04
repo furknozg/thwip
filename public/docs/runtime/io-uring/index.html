@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>
+      io_uring runtime | Thwip
+    </title>
+    <link rel="stylesheet" href="/index.css?v=29">
+      <script src="/docs/docs.js?v=2" defer></script>
+  </head>
+  <body class="docs">
+    <header>
+      <a href="/"><img src="/logo.png" alt="Thwip"></a><a href="/">Home</a>
+    </header>
+    <aside>
+      <span>Documentation</span>
+      <nav>
+        <a href="/docs/?v=31">Overview</a><a href="/docs/runtime/?v=31">Runtime</a>
+        <div class="subnav">
+          <a href="/docs/runtime/auto/?v=31">Auto</a><a href="/docs/runtime/epoll/?v=31">Epoll</a><a href="/docs/runtime/kqueue/?v=31">Kqueue</a><a aria-current="page" href="/docs/runtime/io-uring/?v=31">io_uring</a>
+        </div>
+        <a href="/docs/workers/?v=31">Workers &amp; limits</a><a href="/docs/servers/?v=31">Servers &amp; routing</a><a href="/docs/actions/?v=31">Actions</a><a href="/docs/upstreams/?v=31">Upstreams</a><a href="/docs/examples/?v=31">Use cases</a>
+      <a href="/docs/migration/?v=31">Using another proxy?</a></nav>
+    </aside>
+    <main>
+      <p class="eyebrow">
+        Runtime / Type
+      </p>
+      <h1>
+        io_uring
+      </h1>
+      <p class="intro">
+        A Linux completion runtime that owns its ring, operations, sockets, and provided buffers.
+      </p>
+      <section>
+        <h2>
+          Configuration
+        </h2>
+        <pre><code>[runtime]
+type = "io_uring"
+sq_entries = 4096
+cq_entries = 8192
+buf_ring_size = 16384
+buf_size = 8192</code></pre>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>
+                  Key
+                </th>
+                <th>
+                  Default
+                </th>
+                <th>
+                  Constraint
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  <code>sq_entries</code>
+                </td>
+                <td>
+                  4096
+                </td>
+                <td>
+                  Greater than zero.
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <code>cq_entries</code>
+                </td>
+                <td>
+                  8192
+                </td>
+                <td>
+                  Greater than zero.
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <code>buf_ring_size</code>
+                </td>
+                <td>
+                  16384
+                </td>
+                <td>
+                  Power of two, 1–32768.
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <code>buf_size</code>
+                </td>
+                <td>
+                  8192 bytes
+                </td>
+                <td>
+                  Greater than zero.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <section>
+        <h2>
+          How it behaves
+        </h2>
+        <p>
+          The worker submits accept, receive, send, proxy, and control operations and dispatches completion entries by operation identity. Provided buffer rings supply receive memory. Queue-saturation scheduling defers work safely when submission space is exhausted, and shutdown uses eventfd/control operations and cancellation.
+        </p>
+      </section>
+      <section>
+        <h2>
+          Sizing
+        </h2>
+        <p>
+          Submission entries bound concurrently queued work; completion entries provide headroom for results. Buffer-ring memory is approximately <code>buf_ring_size × buf_size</code> before other worker state, so the defaults represent a deliberate memory commitment. Reduce both together on constrained systems and load-test fragmentation and concurrency.
+        </p>
+      </section>
+      <section>
+        <h2>
+          Use io_uring when
+        </h2>
+        <ul>
+          <li>
+            the deployment is Linux-only;
+          </li>
+          <li>
+            the kernel and container policy support the required operations and registered buffers;
+          </li>
+          <li>
+            startup failure is preferable to runtime fallback.
+          </li>
+        </ul>
+        <div class="note">
+          <p>
+            Use <a href="/docs/runtime/auto/?v=31">Auto</a> if io_uring is preferred but not mandatory.
+          </p>
+        </div>
+      </section>
+    </main>
+    <footer class="doc-pagination">
+      <a href="/docs/runtime/kqueue/?v=31"><small>Previous</small>&larr; Kqueue</a><a href="/docs/workers/?v=31"><small>Next</small>Workers &amp; limits &rarr;</a>
+    </footer>
+  </body>
+</html>

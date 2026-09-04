@@ -1,0 +1,519 @@
+:root {
+  color-scheme: dark;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  background: #0b0b0b;
+  color: #f5f5f5;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  padding: 2rem;
+}
+
+a {
+  color: #f5f5f5;
+  text-underline-offset: 0.3rem;
+}
+
+a:hover { color: #b8b8b8; }
+
+p,
+li {
+  color: #b8b8b8;
+  line-height: 1.7;
+}
+
+strong { color: #f5f5f5; }
+
+.landing {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+}
+
+.landing main { width: min(42rem, 100%); }
+
+.landing img {
+  display: block;
+  width: min(18rem, 70vw);
+  height: auto;
+  margin: 0 auto 2rem;
+}
+
+.landing h1 {
+  margin: 0 0 0.75rem;
+  font: inherit;
+  font-size: clamp(1.75rem, 5vw, 2.5rem);
+  font-weight: 700;
+}
+
+.landing p {
+  margin: 0;
+  max-width: 38rem;
+}
+
+.landing .landing-links {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  margin-top: 1.5rem;
+}
+
+.landing .supported-systems {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem;
+  margin: 1.75rem 0 0;
+}
+
+.landing .supported-systems h3 {
+  margin: 0;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 400;
+  color: #888;
+}
+
+.landing .supported-systems ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.landing .supported-systems li {
+  padding: 0.35rem 0.6rem;
+  border: 1px solid #333;
+  color: #ddd;
+  font-size: 0.8rem;
+}
+
+.docs header {
+  grid-column: 1 / -1;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 2rem;
+  border-bottom: 1px solid #292929;
+}
+
+.docs header img {
+  width: 6.5rem;
+  height: auto;
+}
+
+.docs main,
+.docs footer {
+  grid-column: 2;
+  width: 100%;
+  min-width: 0;
+}
+
+.docs main { padding: 0 3rem; }
+
+.docs {
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(13rem, 1fr) minmax(0, 64rem) minmax(13rem, 1fr);
+}
+
+.docs aside {
+  grid-column: 1;
+  grid-row: 2 / span 2;
+  position: sticky;
+  top: 1.5rem;
+  align-self: start;
+  width: 100%;
+  margin-top: 0;
+  padding: 2rem;
+  border-right: 1px solid #292929;
+}
+
+.docs aside > span {
+  display: block;
+  margin-bottom: 0.65rem;
+  color: #777;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.docs aside nav {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.docs aside .subnav {
+  display: grid;
+  margin: 0.1rem 0 0.5rem 0.65rem;
+  padding-left: 0.75rem;
+  border-left: 1px solid #333;
+}
+
+.docs aside .subnav .subnav {
+  margin: 0.2rem 0 0.45rem 0.35rem;
+  border-left-color: #555;
+}
+
+.docs aside .subnav .subnav a {
+  color: #777;
+  font-size: 0.74rem;
+}
+
+.docs aside .subnav .subnav a:hover { color: #f5f5f5; }
+
+.docs aside .subnav a {
+  padding: 0.3rem 0;
+  font-size: 0.8rem;
+}
+
+.docs aside a {
+  display: block;
+  padding: 0.5rem 0;
+  color: #888;
+  text-decoration: none;
+  line-height: 1.35;
+}
+
+.docs aside a:hover,
+.docs aside a[aria-current="page"] {
+  color: #f5f5f5;
+}
+
+.docs h1 {
+  margin: 4rem 0 1rem;
+  font-size: clamp(2rem, 7vw, 3.5rem);
+  letter-spacing: -0.05em;
+}
+
+.docs h2 {
+  margin: 4rem 0 1rem;
+  padding-top: 1rem;
+  font-size: 1.5rem;
+}
+
+.docs h3 {
+  margin: 2.5rem 0 0.75rem;
+  padding-left: 1.25rem;
+  border-left: 1px solid #3a3a3a;
+  font-size: 1rem;
+}
+
+.docs section > h3 + p,
+.docs section > h3 + ul,
+.docs section > h3 + pre,
+.docs section > h3 + .table-wrap {
+  margin-left: 1.25rem;
+}
+
+.docs .intro {
+  max-width: 48rem;
+  font-size: 1.05rem;
+}
+
+.docs .eyebrow {
+  margin: 4rem 0 -3rem;
+  color: #777;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.docs .section-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 2rem;
+}
+
+.docs .section-links a {
+  padding: 0.45rem 0.7rem;
+  border: 1px solid #292929;
+  text-decoration: none;
+}
+
+.docs pre {
+  overflow-x: auto;
+  margin: 1rem 0;
+  padding: 1.25rem;
+  border: 1px solid #292929;
+  background: #111;
+  color: #e8e8e8;
+  line-height: 1.55;
+}
+
+.docs .code-example {
+  position: relative;
+  margin: 1rem 0;
+  border: 1px solid #292929;
+  background: #111;
+}
+
+.docs .code-example pre {
+  margin: 0;
+  border: 0;
+}
+
+.docs .code-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 2.4rem;
+  padding: 0.35rem 0.5rem 0.35rem 0.9rem;
+  border-bottom: 1px solid #292929;
+  color: #777;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+}
+
+.docs .code-toolbar button {
+  padding: 0.3rem 0.55rem;
+  border: 1px solid #444;
+  background: #1b1b1b;
+  color: #ddd;
+  font: inherit;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+
+.docs .code-toolbar button:hover { border-color: #888; color: #fff; }
+
+.docs .toml-table { color: #b7d5ff; }
+.docs .toml-key { color: #d7b6ff; }
+.docs .toml-string { color: #b8dfb4; }
+.docs .toml-number { color: #f0c785; }
+.docs .toml-comment { color: #777; }
+
+.docs code { color: #e8e8e8; }
+.docs p code,
+.docs li code,
+.docs td code { color: #fff; }
+.docs .table-wrap { overflow-x: auto; }
+
+.docs table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.docs th,
+.docs td {
+  padding: 0.75rem;
+  border: 1px solid #292929;
+  text-align: left;
+  vertical-align: top;
+  line-height: 1.5;
+}
+
+.docs th { color: #f5f5f5; }
+.docs td { color: #b8b8b8; }
+
+.docs .note {
+  margin: 1.5rem 0;
+  padding: 1rem 1.25rem;
+  border-left: 2px solid #777;
+  background: #111;
+}
+
+.docs .sound-recording {
+  display: grid;
+  gap: 0.35rem;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 1.25rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid #292929;
+  background: #111;
+}
+
+.docs .pronunciation-key {
+  margin-top: 0.75rem;
+  color: #aaa;
+}
+
+.docs .pronunciation-key abbr {
+  color: #777;
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-decoration: none;
+}
+
+.docs .pronunciation-key span {
+  color: #f5f5f5;
+}
+
+.docs .sound-recording audio {
+  width: min(20rem, calc(100vw - 3.7rem));
+  height: 2rem;
+}
+
+.docs .sound-recording small {
+  color: #777;
+  font-size: 0.65rem;
+}
+
+.docs .skill-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+}
+
+.docs .skill-document {
+  margin-top: 1.25rem;
+  border: 1px solid #484848;
+  background: #0d0d0d;
+  box-shadow: inset 0 0 0 1px #111;
+}
+
+.docs .skill-document-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 3.5rem;
+  padding: 0.6rem 0.75rem 0.6rem 1rem;
+  border-bottom: 1px solid #484848;
+  background: #151515;
+  color: #aaa;
+  font-size: 0.8rem;
+}
+
+.docs .skill-document-header .skill-actions { margin: 0; }
+
+.docs .skill-document-header .copy-button,
+.docs .skill-document-header .skill-actions a {
+  border-color: #555;
+  background: #202020;
+}
+
+.docs .skill-document-header .copy-button:hover,
+.docs .skill-document-header .skill-actions a:hover {
+  border-color: #aaa;
+  background: #2a2a2a;
+}
+
+.docs .copy-button,
+.docs .skill-actions a {
+  padding: 0.55rem 0.75rem;
+  border: 1px solid #292929;
+  background: #111;
+  color: #f5f5f5;
+  font: inherit;
+  font-size: 0.8rem;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.docs .copy-button:hover,
+.docs .skill-actions a:hover { border-color: #777; }
+
+.docs [data-copy-status] {
+  color: #888;
+  font-size: 0.8rem;
+}
+
+.docs .skill-rendered {
+  max-height: 36rem;
+  overflow-y: scroll;
+  overscroll-behavior: contain;
+  padding: 1.5rem;
+  background: #0b0b0b;
+}
+
+.docs .skill-rendered h1,
+.docs .skill-rendered h2,
+.docs .skill-rendered h3 {
+  margin: 1.75rem 0 0.75rem;
+  padding: 0;
+  border: 0;
+  font-size: 1rem;
+}
+
+.docs .skill-rendered h1:first-child { margin-top: 0; }
+.docs .skill-rendered p { margin: 0.75rem 0; }
+.docs .skill-rendered ul,
+.docs .skill-rendered ol { margin: 0.75rem 0; }
+
+.docs .copy-status {
+  display: block;
+  min-height: 1.2rem;
+  padding: 0 0.75rem 0.75rem;
+  color: #888;
+  font-size: 0.8rem;
+}
+
+.docs footer {
+  margin-top: 5rem;
+  padding: 2rem 3rem;
+  border-top: 1px solid #292929;
+  color: #666;
+  font-size: 0.8rem;
+}
+
+.docs .doc-pagination {
+  display: flex;
+  justify-content: space-between;
+  gap: 2rem;
+}
+
+.docs .doc-pagination a {
+  display: grid;
+  gap: 0.4rem;
+  text-decoration: none;
+}
+
+.docs .doc-pagination a:last-child { text-align: right; }
+
+.docs .doc-pagination small {
+  color: #666;
+  font: inherit;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+@media (max-width: 48rem) {
+  .docs {
+    display: block;
+  }
+
+  .docs aside {
+    position: static;
+    width: min(48rem, 100%);
+    margin: 0;
+    padding: 1.25rem;
+    border-right: 0;
+    border-bottom: 1px solid #292929;
+  }
+
+  .docs aside nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 1.25rem;
+  }
+
+  .docs aside .subnav {
+    display: contents;
+  }
+
+  .docs main,
+  .docs footer { width: min(48rem, 100%); }
+
+  .docs main { padding: 0 1.25rem; }
+  .docs footer { padding: 2rem 1.25rem; }
+}
+
+@media (max-width: 42rem) {
+  body { padding: 1.25rem; }
+  .docs .doc-pagination { gap: 1rem; }
+}

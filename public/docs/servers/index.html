@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>
+      Servers and routing | Thwip
+    </title>
+    <link rel="stylesheet" href="/index.css?v=29">
+      <script src="/docs/docs.js?v=2" defer></script>
+  </head>
+  <body class="docs">
+    <header>
+      <a href="/"><img src="/logo.png" alt="Thwip"></a><a href="/">Home</a>
+    </header>
+    <aside>
+      <span>Documentation</span>
+      <nav>
+        <a href="/docs/?v=31">Overview</a><a href="/docs/runtime/?v=31">Runtime</a><a href="/docs/workers/?v=31">Workers &amp; limits</a><a aria-current="page" href="/docs/servers/?v=31">Servers &amp; routing</a>
+        <div class="subnav">
+          <a href="#listeners">Listeners</a><a href="#virtual-hosts">Virtual hosts</a><a href="#matching">Route matching</a>
+        </div>
+        <a href="/docs/actions/?v=31">Actions</a><a href="/docs/upstreams/?v=31">Upstreams</a><a href="/docs/examples/?v=31">Use cases</a>
+      <a href="/docs/migration/?v=31">Using another proxy?</a></nav>
+    </aside>
+    <main>
+      <p class="eyebrow">
+        Configuration / HTTP
+      </p>
+      <h1>
+        Servers &amp; routing
+      </h1>
+      <p class="intro">
+        A server declares an IP/port listener, an optional virtual-host name, and its routes.
+      </p>
+      <section id="listeners">
+        <h2>
+          Listener
+        </h2>
+        <pre><code>[[http.servers]]
+listen = "127.0.0.1:8080"
+server_name = "example.test"</code></pre>
+        <p>
+          <code>listen</code> is required and must be a literal socket address. Use <code>127.0.0.1</code> for local access, <code>0.0.0.0</code> for all IPv4 interfaces, or an IPv6 form such as <code>[::1]:8080</code>. The name is optional.
+        </p>
+      </section>
+      <section id="virtual-hosts">
+        <h2>
+          Virtual hosts
+        </h2>
+        <pre><code>[[http.servers]]
+listen = "0.0.0.0:8080"
+server_name = "www.example.test"
+
+[[http.servers]]
+listen = "0.0.0.0:8080"
+server_name = "api.example.test"</code></pre>
+        <p>
+          Identical addresses share one listener. Thwip matches the request <code>Host</code> to <code>server_name</code>, ignoring ASCII case and the port. The first server in a listener group is the fallback, so place the desired default first.
+        </p>
+      </section>
+      <section id="matching">
+        <h2>
+          Matchers and precedence
+        </h2>
+        <pre><code>[[http.servers.locations]]
+matcher = { type = "exact", path = "/health" }
+action = { type = "response", status = 200, body = "OK" }
+
+[[http.servers.locations]]
+matcher = { type = "prefix", path = "/api" }
+action = { type = "proxy", upstream_group = "api" }</code></pre>
+        <p>
+          <code>exact</code> targets one path. <code>prefix</code> targets paths beginning with its value. Exact wins first; otherwise the longest prefix wins, so <code>/api/admin</code> beats <code>/api</code>.
+        </p>
+      </section>
+    </main>
+    <footer class="doc-pagination">
+      <a href="/docs/workers/?v=31"><small>Previous</small>&larr; Workers &amp; limits</a><a href="/docs/actions/?v=31"><small>Next</small>Actions &rarr;</a>
+    </footer>
+  </body>
+</html>
