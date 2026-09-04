@@ -16,12 +16,12 @@
     <aside>
       <span>Documentation</span>
       <nav>
-        <a href="/docs/?v=31">Overview</a><a href="/docs/runtime/?v=31">Runtime</a><a href="/docs/workers/?v=31">Workers &amp; limits</a><a href="/docs/servers/?v=31">Servers &amp; routing</a><a aria-current="page" href="/docs/actions/?v=31">Actions</a>
+        <a href="/docs/?v=32">Overview</a><a href="/docs/runtime/?v=32">Runtime</a><a href="/docs/workers/?v=32">Workers &amp; limits</a><a href="/docs/servers/?v=32">Servers &amp; routing</a><a aria-current="page" href="/docs/actions/?v=32">Actions</a>
         <div class="subnav">
-          <a href="#response">Response</a><a href="#static">Static files</a><a href="#proxy">Proxy</a><a href="#requests">Request behavior</a>
+          <a href="#response">Response</a><a href="#static">Static files</a><a href="#proxy">Proxy</a><a href="#requests">Request behavior</a><a href="#http-matrix">HTTP matrix</a>
         </div>
-        <a href="/docs/upstreams/?v=31">Upstreams</a><a href="/docs/examples/?v=31">Use cases</a>
-      <a href="/docs/migration/?v=31">Using another proxy?</a></nav>
+        <a href="/docs/upstreams/?v=32">Upstreams</a><a href="/docs/examples/?v=32">Use cases</a>
+      <a href="/docs/migration/?v=32">Using another proxy?</a></nav>
     </aside>
     <main>
       <p class="eyebrow">
@@ -100,9 +100,27 @@ upstreams = [
           Proxying supports request bodies framed with <code>Content-Length</code> and rejects unsupported transfer encodings. Hop-by-hop headers are removed, the upstream host is set for the selected target, and connection-close behavior remains explicit.
         </p>
       </section>
+      <section id="http-matrix">
+        <h2>
+          HTTP feature matrix
+        </h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Feature</th><th>Current behavior</th></tr></thead>
+            <tbody>
+              <tr><td>Protocol</td><td>Accepts HTTP/1.x requests and emits HTTP/1.1 responses.</td></tr>
+              <tr><td>Methods</td><td>Static actions support <code>GET</code> and <code>HEAD</code>; response actions return their configured response.</td></tr>
+              <tr><td>Request bodies</td><td><code>Content-Length</code> framing is validated and proxy requests can be forwarded.</td></tr>
+              <tr><td>Transfer encoding</td><td>Unsupported transfer encodings, including chunked requests, are rejected.</td></tr>
+              <tr><td>Connection lifetime</td><td>Responses explicitly close the connection; keep-alive is not available yet.</td></tr>
+              <tr><td>Unavailable</td><td>HTTP/2, HTTP/3, WebSocket upgrades, client TLS, and HTTPS upstreams are not implemented.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
     </main>
     <footer class="doc-pagination">
-      <a href="/docs/servers/?v=31"><small>Previous</small>&larr; Servers &amp; routing</a><a href="/docs/upstreams/?v=31"><small>Next</small>Upstreams &rarr;</a>
+      <a href="/docs/servers/?v=32"><small>Previous</small>&larr; Servers &amp; routing</a><a href="/docs/upstreams/?v=32"><small>Next</small>Upstreams &rarr;</a>
     </footer>
   </body>
 </html>

@@ -17,12 +17,12 @@
     <aside>
       <span>Documentation</span>
       <nav>
-        <a aria-current="page" href="/docs/?v=31">Overview</a>
+        <a aria-current="page" href="/docs/?v=32">Overview</a>
         <div class="subnav">
-          <a href="#what-is-thwip">What is Thwip?</a><a href="#why-thwip">Why Thwip?</a><a href="#pronunciation">Pronunciation</a><a href="#getting-started">Getting started</a><a href="/docs/roadmap/?v=31">Feature roadmap</a>
+          <a href="#what-is-thwip">What is Thwip?</a><a href="#why-thwip">Why Thwip?</a><a href="#pronunciation">Pronunciation</a><a href="#getting-started">Getting started</a><a href="/docs/roadmap/?v=32">Feature roadmap</a>
         </div>
-        <a href="/docs/runtime/?v=31">Runtime</a><a href="/docs/workers/?v=31">Workers &amp; limits</a><a href="/docs/servers/?v=31">Servers &amp; routing</a><a href="/docs/actions/?v=31">Actions</a><a href="/docs/upstreams/?v=31">Upstreams</a><a href="/docs/examples/?v=31">Use cases</a>
-      <a href="/docs/migration/?v=31">Using another proxy?</a></nav>
+        <a href="/docs/runtime/?v=32">Runtime</a><a href="/docs/workers/?v=32">Workers &amp; limits</a><a href="/docs/servers/?v=32">Servers &amp; routing</a><a href="/docs/actions/?v=32">Actions</a><a href="/docs/upstreams/?v=32">Upstreams</a><a href="/docs/examples/?v=32">Use cases</a>
+      <a href="/docs/migration/?v=32">Using another proxy?</a></nav>
     </aside>
     <main>
       <h1>
@@ -91,12 +91,22 @@ action = { type = "response", status = 200, body = "OK" }</code></pre>
           </p>
         </div>
         <p>
-          Moving an existing proxy configuration? Start with <a href="/docs/migration/?v=31">Using another proxy?</a>.
+          Moving an existing proxy configuration? Start with <a href="/docs/migration/?v=32">Using another proxy?</a>.
+        </p>
+        <h3>
+          Build, run, and verify
+        </h3>
+        <pre><code>cargo build --release
+cargo run --release -p master --bin thwip-main
+
+curl -i http://127.0.0.1:8080/health</code></pre>
+        <p>
+          Run Thwip from the repository root: the executable reads <code>rginx.toml</code> from the current working directory. Change the listener address if port 8080 is already in use; the configured health route should return <code>200 OK</code>.
         </p>
       </section>
     </main>
     <footer class="doc-pagination">
-      <span></span><a href="/docs/roadmap/?v=31"><small>Next</small>Feature roadmap &rarr;</a>
+      <span></span><a href="/docs/roadmap/?v=32"><small>Next</small>Feature roadmap &rarr;</a>
     </footer>
   </body>
 </html>

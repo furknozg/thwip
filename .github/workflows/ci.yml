@@ -25,3 +25,29 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test workspace on epoll
         run: cargo test --workspace
+
+  macos-kqueue:
+    name: macOS kqueue
+    runs-on: macos-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test workspace on kqueue
+        run: cargo test --workspace
+
+  linux-io-uring-build:
+    name: Linux io_uring build and configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Compile the direct io_uring worker
+        run: cargo check -p slave
+      - name: Test io_uring configuration validation
+        run: cargo test -p proxy-common --test io_uring_config --test runtime_validation

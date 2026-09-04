@@ -16,12 +16,12 @@
     <aside>
       <span>Documentation</span>
       <nav>
-        <a href="/docs/?v=31">Overview</a><a href="/docs/runtime/?v=31">Runtime</a><a aria-current="page" href="/docs/workers/?v=31">Workers &amp; limits</a>
+        <a href="/docs/?v=32">Overview</a><a href="/docs/runtime/?v=32">Runtime</a><a aria-current="page" href="/docs/workers/?v=32">Workers &amp; limits</a>
         <div class="subnav">
-          <a href="#processes">Processes</a><a href="#limits">Limits</a><a href="#timeouts">Proxy timeouts</a><a href="#dns">DNS</a>
+          <a href="#processes">Processes</a><a href="#limits">Limits</a><a href="#timeouts">Proxy timeouts</a><a href="#dns">DNS</a><a href="#operations">Operations</a>
         </div>
-        <a href="/docs/servers/?v=31">Servers &amp; routing</a><a href="/docs/actions/?v=31">Actions</a><a href="/docs/upstreams/?v=31">Upstreams</a><a href="/docs/examples/?v=31">Use cases</a>
-      <a href="/docs/migration/?v=31">Using another proxy?</a></nav>
+        <a href="/docs/servers/?v=32">Servers &amp; routing</a><a href="/docs/actions/?v=32">Actions</a><a href="/docs/upstreams/?v=32">Upstreams</a><a href="/docs/examples/?v=32">Use cases</a>
+      <a href="/docs/migration/?v=32">Using another proxy?</a></nav>
     </aside>
     <main>
       <p class="eyebrow">
@@ -135,9 +135,23 @@ timeout_ms = 3000</code></pre>
           Resolution runs outside the socket loop. The thread count and lookup deadline must exceed zero. Multiple DNS addresses are connection fallbacks, not a balancing policy.
         </p>
       </section>
+      <section id="operations">
+        <h2>
+          Deployment and operations
+        </h2>
+        <p>
+          The master process reads the configuration and supervises workers. Each worker creates its own listeners and owns its clients; <code>SO_REUSEPORT</code> lets the kernel distribute incoming connections between them.
+        </p>
+        <p>
+          On Linux, worker CPU affinity is attempted. On macOS and BSD it is logged as unavailable and does not prevent startup. Startup logs record the selected runtime and any automatic fallback.
+        </p>
+        <p>
+          Send <code>SIGINT</code> or <code>SIGTERM</code> to begin graceful shutdown: workers stop accepting new work and drain active connections until <code>drain_timeout_ms</code>. A crashed worker is restarted with bounded backoff, capped at 10 seconds and reset after stable operation. Structured logs and each worker's final metrics report provide the current operational visibility; <code>thwip_ctl</code> is planned for richer control.
+        </p>
+      </section>
     </main>
     <footer class="doc-pagination">
-      <a href="/docs/runtime/?v=31"><small>Previous</small>&larr; Runtime</a><a href="/docs/servers/?v=31"><small>Next</small>Servers &amp; routing &rarr;</a>
+      <a href="/docs/runtime/?v=32"><small>Previous</small>&larr; Runtime</a><a href="/docs/servers/?v=32"><small>Next</small>Servers &amp; routing &rarr;</a>
     </footer>
   </body>
 </html>
