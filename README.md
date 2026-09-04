@@ -145,23 +145,30 @@ HTTP responses, including static files and streaming upstream proxies.
   reject invalid or stale listener completions.
 - [x] Implement single-shot accept with one outstanding operation per listener,
   safe accepted-FD ownership, and accept resubmission.
-- [x] Retain accepted sockets in a generation-aware connection slab with one
-  stable boxed receive buffer per connection and enforce the connection cap.
+- [x] Retain accepted sockets in a generation-aware connection slab and enforce
+  the connection cap.
 - [x] Submit one `Recv` per connection, copy completed bytes into an HTTP input
   buffer, handle EOF/errors, and reject stale read completions.
 - [x] Parse complete HTTP requests, select virtual hosts/routes, and build the
   same responses as the readiness worker.
+- [x] Return HTTP 400/413/501 responses for invalid framing, oversized requests,
+  and unsupported transfer encodings instead of silently disconnecting.
 - [x] Submit `Send` operations with correct partial-write offsets, bounded
   output, and stale write-completion rejection.
 - [x] Add static-file and upstream-proxy parity, including DNS and timeout
   behavior shared with the readiness runtime.
+- [x] Drive upstream connect/send/receive through `io_uring`, retain all DNS
+  results, and fall back to the next address after a failed connection attempt.
+- [x] Flush and retry submissions when the SQ is temporarily saturated instead
+  of terminating the worker with `WouldBlock`.
 - [ ] Add multishot accept behind capability checks while retaining the
   single-shot resubmission fallback.
-- [ ] Use fixed/provided buffers only after a safe buffer-ownership and return
-  protocol is defined; wire `buf_ring_size` and `buf_size` into that design.
-- [x] Define cancellation and shutdown behavior for every outstanding request;
-  wake the ring, cancel accepts/reads/writes, and drain completions before
-  releasing resources.
+- [x] Receive client and upstream data through a registered provided-buffer
+  ring sized by `buf_ring_size`, with buffers sized by `buf_size` and returned
+  after bytes are copied into connection-owned state.
+- [x] Wake the ring on shutdown, cancel listener accepts, drain active requests,
+  and enforce the configured graceful-shutdown deadline.
+- [x] Verify the direct driver with a native Linux smoke run.
 - [ ] Add native Linux tests for operation encoding, accept/resubmission,
   connection-slot reuse, stale completions, HTTP parity, and shutdown.
 - [ ] Evaluate optional operations (`recvmsg`, `send_zc`, fixed files, splice)
