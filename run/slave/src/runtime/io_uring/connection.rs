@@ -12,6 +12,9 @@ pub(super) struct UringConnection {
     pub(super) request_buffer: Vec<u8>,
     pub(super) pending_request: Option<PendingRequest>,
     pub(super) request: Option<CompletedRequest>,
+    pub(super) write_buffer: Vec<u8>,
+    pub(super) write_offset: usize,
+    pub(super) write_pending: bool,
 }
 
 pub(super) struct PendingRequest {
@@ -47,6 +50,9 @@ impl UringConnection {
             request_buffer: Vec::with_capacity(buffer_size),
             pending_request: None,
             request: None,
+            write_buffer: Vec::new(),
+            write_offset: 0,
+            write_pending: false,
         }
     }
 
@@ -67,6 +73,11 @@ impl UringConnection {
 
     pub(super) fn mark_read_completed(&mut self) {
         self.read_pending = false;
+    }
+
+    pub(super) fn queue_response(&mut self, response: Vec<u8>) {
+        self.write_buffer = response;
+        self.write_offset = 0;
     }
 }
 

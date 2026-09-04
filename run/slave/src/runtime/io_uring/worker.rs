@@ -7,10 +7,11 @@ use super::{
     IoUringRuntime,
 };
 use crate::{
-    parse_request_head, BodyFramingError, DnsLimits, ProxyLimits, RequestHeadParse, ShutdownHandle,
-    WorkerContext, WorkerLimits,
+    parse_request_head, response_bytes, route, select_server, BodyFramingError, DnsLimits,
+    ProxyLimits, RequestHeadParse, ShutdownHandle, WorkerContext, WorkerLimits,
 };
 use io_uring::{cqueue, opcode, squeue, types, IoUring};
+use proxy_common::Action;
 use proxy_common::Server;
 use slab::Slab;
 use std::{
@@ -299,13 +300,58 @@ impl IoUringWorker {
                 head: pending.head,
                 body: connection.request_buffer[pending.body_start..pending.body_end].to_vec(),
             });
-            return Ok(());
+            return self.prepare_response(ConnectionId {
+                slot: operation.slot,
+                generation: operation.generation,
+            });
         }
 
         self.submit_recv(ConnectionId {
             slot: operation.slot,
             generation: operation.generation,
         })
+    }
+
+    fn prepare_response(&mut self, connection_id: ConnectionId) -> io::Result<()> {
+        let slot = connection_id.slot as usize;
+        let Some(connection) = self.connections.get(slot) else {
+            return Ok(());
+        };
+        if !connection.matches_generation(connection_id.generation) {
+            return Ok(());
+        }
+        let Some(request) = connection.request.as_ref() else {
+            return Ok(());
+        };
+        let Some(listener) = self.listeners.get(connection.listener_index) else {
+            self.connections.remove(slot);
+            return Ok(());
+        };
+        let server_index = select_server(
+            &listener.server_indices,
+            listener.default_server,
+            &request.head,
+            &self.servers,
+        );
+        let response = match self.servers.get(server_index) {
+            Some(server) => match route(server, &request.head.target) {
+                Some(Action::Response { status, body }) => response_bytes(*status, body),
+                Some(Action::Static { .. }) => {
+                    response_bytes(501, "static action is not implemented by io_uring")
+                }
+                Some(Action::Proxy { .. }) => {
+                    response_bytes(501, "proxy action is not implemented by io_uring")
+                }
+                None => response_bytes(404, "not found"),
+            },
+            None => response_bytes(500, "server configuration is unavailable"),
+        };
+        if response.len() > self.limits.max_write_buffer_size {
+            self.connections[slot].queue_response(response_bytes(500, "response is too large"));
+        } else {
+            self.connections[slot].queue_response(response);
+        }
+        Ok(())
     }
 
     /// Submit initial operations and dispatch completions until shutdown.
