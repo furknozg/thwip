@@ -6,8 +6,8 @@ use crate::proxy::Upstream;
 #[cfg(unix)]
 use crate::{
     parse_request_head, response_bytes, route, select_server, static_error_response,
-    static_stream_response, BodyFramingError, RequestHead, RequestHeadParse, StaticChunk,
-    UpstreamBalancer,
+    static_stream_response, BodyFramingError, LoadedSslConfig, RequestHead, RequestHeadParse,
+    StaticChunk, UpstreamBalancer,
 };
 #[cfg(unix)]
 use mio::{net::TcpListener, net::TcpStream, Events, Interest, Poll, Token, Waker};
@@ -64,6 +64,7 @@ struct RegisteredListener {
     socket: TcpListener,
     default_server: usize,
     server_indices: Vec<usize>,
+    ssl: Option<LoadedSslConfig>,
 }
 
 /// Snapshot the readiness flags before mutating worker state. `mio::Events`
@@ -116,6 +117,7 @@ impl ReadinessWorker {
         let WorkerContext {
             listener_groups,
             servers,
+            ssl_configs,
             shutdown,
             limits,
             proxy_limits,
@@ -133,8 +135,16 @@ impl ReadinessWorker {
                 socket: TcpListener::from_std(listener.socket),
                 default_server: listener.default_server,
                 server_indices: listener.server_indices,
+                ssl: ssl_configs.get(listener.default_server).cloned().flatten(),
             })
             .collect();
+
+        if ssl_configs.len() != servers.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "SSL configuration does not match the configured servers",
+            ));
+        }
 
         for (index, listener) in listeners.iter_mut().enumerate() {
             poll.registry()
@@ -334,7 +344,9 @@ impl ReadinessWorker {
         let generation = next_generation(self.generations[slot]);
         self.generations[slot] = generation;
         let connection_id = ConnectionId { slot, generation };
-        entry.insert(Connection::new(stream, listener_group, generation));
+        let ssl = self.listeners[listener_group].ssl.as_ref();
+        let connection = Connection::new(stream, listener_group, generation, ssl)?;
+        entry.insert(connection);
         let token = connection_id.token(SocketRole::Client)?;
 
         if let Err(error) = self.poll.registry().register(
@@ -369,7 +381,28 @@ impl ReadinessWorker {
             let mut buffer = [0_u8; 8 * 1024];
 
             for _ in 0..MAX_READS_PER_EVENT {
-                match connection.socket.read(&mut buffer) {
+                let read_result: io::Result<usize> = if let Some(ssl) = &mut connection.ssl {
+                    match ssl.connection.read_tls(&mut connection.socket) {
+                        Ok(0) => Ok(0),
+                        Ok(_) => ssl
+                            .connection
+                            .process_new_packets()
+                            .map_err(|error| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    format!("SSL handshake failed: {error}"),
+                                )
+                            })
+                            .and_then(|_| ssl.connection.reader().read(&mut buffer)),
+                        Err(error) => Err(error),
+                    }
+                } else {
+                    connection.socket.read(&mut buffer)
+                };
+                match read_result {
+                    // A TLS record can advance the handshake without producing
+                    // application bytes. That is not a client EOF.
+                    Ok(0) if connection.ssl.is_some() => break,
                     Ok(0) => {
                         close_connection = true;
                         break;
@@ -519,6 +552,11 @@ impl ReadinessWorker {
 
         if close_connection {
             self.remove_connection(connection_id)?;
+        }
+
+        if self.is_current(connection_id) && self.connections[connection_id.slot].ssl_wants_write()
+        {
+            self.reregister_client(connection_id, Interest::READABLE.add(Interest::WRITABLE))?;
         }
 
         Ok(())
@@ -853,14 +891,33 @@ impl ReadinessWorker {
             use std::io::Write;
 
             let connection = &mut self.connections[connection_id.slot];
+            if connection.write_offset == connection.write_buffer.len()
+                && connection.ssl.is_some()
+                && !connection.ssl_wants_write()
+            {
+                return self.reregister_client(connection_id, Interest::READABLE);
+            }
             for _ in 0..MAX_WRITES_PER_EVENT {
                 if connection.write_offset == connection.write_buffer.len() {
-                    break;
+                    if connection.ssl.is_none() || !connection.ssl_wants_write() {
+                        break;
+                    }
                 }
-                match connection
-                    .socket
-                    .write(&connection.write_buffer[connection.write_offset..])
-                {
+                let writing_application = connection.write_offset < connection.write_buffer.len();
+                let write_result: io::Result<usize> = if let Some(ssl) = &mut connection.ssl {
+                    if writing_application {
+                        ssl.connection
+                            .writer()
+                            .write(&connection.write_buffer[connection.write_offset..])
+                    } else {
+                        ssl.connection.write_tls(&mut connection.socket)
+                    }
+                } else {
+                    connection
+                        .socket
+                        .write(&connection.write_buffer[connection.write_offset..])
+                };
+                match write_result {
                     Ok(0) => {
                         eprintln!("connection write returned zero");
                         write_failed = true;
@@ -868,8 +925,15 @@ impl ReadinessWorker {
                     }
                     Ok(written) => {
                         self.metrics.wrote_bytes(written);
-                        connection.write_offset += written;
+                        if writing_application {
+                            connection.write_offset += written;
+                        }
                         connection.last_progress = Instant::now();
+                        if connection.write_offset == connection.write_buffer.len()
+                            && !connection.ssl_wants_write()
+                        {
+                            break;
+                        }
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -884,10 +948,14 @@ impl ReadinessWorker {
 
         let write_finished = self.is_current(connection_id)
             && self.connections[connection_id.slot].write_offset
-                == self.connections[connection_id.slot].write_buffer.len();
+                == self.connections[connection_id.slot].write_buffer.len()
+            && !self.connections[connection_id.slot].ssl_wants_write();
         if write_failed {
             self.remove_connection(connection_id)?;
-        } else if write_finished && self.is_current(connection_id) {
+        } else if write_finished
+            && self.is_current(connection_id)
+            && self.connections[connection_id.slot].is_writing_response()
+        {
             if self.connections[connection_id.slot].static_stream.is_some() {
                 return self.advance_static_stream(connection_id);
             }
@@ -896,9 +964,9 @@ impl ReadinessWorker {
                 .proxy()
                 .map(|proxy| proxy.upstream_eof);
             match proxy_state {
-                None => self.remove_connection(connection_id)?,
-                Some(_) if self.draining => self.remove_connection(connection_id)?,
-                Some(true) => self.remove_connection(connection_id)?,
+                None => self.close_client(connection_id)?,
+                Some(_) if self.draining => self.close_client(connection_id)?,
+                Some(true) => self.close_client(connection_id)?,
                 Some(false) => {
                     let connection = &mut self.connections[connection_id.slot];
                     connection.write_buffer.clear();
@@ -907,7 +975,11 @@ impl ReadinessWorker {
                     self.pending_upstream_reads.insert(connection_id);
                 }
             }
-        } else if self.is_current(connection_id) {
+        } else if write_finished && self.is_current(connection_id) {
+            self.reregister_client(connection_id, Interest::READABLE)?;
+        } else if self.is_current(connection_id)
+            && self.connections[connection_id.slot].is_writing_response()
+        {
             // We stopped because the per-event work budget was exhausted, not
             // because the socket returned WouldBlock. Resume it ourselves so
             // edge-triggered epoll does not need to emit another edge.
@@ -929,6 +1001,32 @@ impl ReadinessWorker {
                 response_bytes(501, "configured action is not implemented")
             }
             None => response_bytes(404, "not found"),
+        }
+    }
+
+    fn close_client(&mut self, connection_id: ConnectionId) -> io::Result<()> {
+        if !self.is_current(connection_id) {
+            return Ok(());
+        }
+        let send_close_notify = {
+            let connection = &mut self.connections[connection_id.slot];
+            if connection.ssl.is_some() && !connection.ssl_closing {
+                connection
+                    .ssl
+                    .as_mut()
+                    .unwrap()
+                    .connection
+                    .send_close_notify();
+                connection.ssl_closing = true;
+                true
+            } else {
+                false
+            }
+        };
+        if send_close_notify {
+            self.reregister_client(connection_id, Interest::WRITABLE)
+        } else {
+            self.remove_connection(connection_id)
         }
     }
 
@@ -1099,6 +1197,25 @@ impl ReadinessWorker {
             .collect();
         for connection_id in expired {
             eprintln!("connection {} timed out", connection_id.slot);
+            self.remove_connection(connection_id)?;
+        }
+        let handshake_expired: Vec<ConnectionId> = self
+            .connections
+            .iter()
+            .filter_map(|(slot, connection)| {
+                connection
+                    .ssl_handshake_expired(now)
+                    .then_some(ConnectionId {
+                        slot,
+                        generation: connection.generation,
+                    })
+            })
+            .collect();
+        for connection_id in handshake_expired {
+            eprintln!(
+                "SSL handshake timed out for connection {}",
+                connection_id.slot
+            );
             self.remove_connection(connection_id)?;
         }
         Ok(())

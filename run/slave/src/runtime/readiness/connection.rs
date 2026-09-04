@@ -1,10 +1,21 @@
 #![cfg(unix)]
 
 use super::proxy::ProxyState;
+use crate::LoadedSslConfig;
 use crate::RequestHead;
 use crate::StaticStream;
 use mio::net::TcpStream;
-use std::time::Instant;
+use std::{
+    io,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+pub(super) struct SslSession {
+    pub(super) connection: rustls::ServerConnection,
+    pub(super) started_at: Instant,
+    pub(super) handshake_timeout: Duration,
+}
 
 /// A connection is always in exactly one protocol phase. Keeping the upstream
 /// state inside `Proxying` prevents contradictory combinations of flags.
@@ -37,12 +48,36 @@ pub(super) struct Connection {
     pub(super) last_progress: Instant,
     pub(super) generation: usize,
     pub(super) static_stream: Option<StaticStream>,
+    pub(super) ssl: Option<SslSession>,
+    pub(super) ssl_closing: bool,
     phase: ConnectionPhase,
 }
 
 impl Connection {
-    pub(super) fn new(socket: TcpStream, listener_group: usize, generation: usize) -> Self {
-        Self {
+    pub(super) fn new(
+        socket: TcpStream,
+        listener_group: usize,
+        generation: usize,
+        ssl: Option<&LoadedSslConfig>,
+    ) -> io::Result<Self> {
+        let ssl = ssl
+            .map(|config| {
+                rustls::ServerConnection::new(Arc::clone(&config.server_config)).map(|connection| {
+                    SslSession {
+                        connection,
+                        started_at: Instant::now(),
+                        handshake_timeout: config.handshake_timeout,
+                    }
+                })
+            })
+            .transpose()
+            .map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("failed to create SSL session: {error}"),
+                )
+            })?;
+        Ok(Self {
             socket,
             read_buffer: Vec::with_capacity(8 * 1024),
             write_buffer: Vec::new(),
@@ -51,10 +86,25 @@ impl Connection {
             last_progress: Instant::now(),
             generation,
             static_stream: None,
+            ssl,
+            ssl_closing: false,
             phase: ConnectionPhase::Reading {
                 pending_request: None,
             },
-        }
+        })
+    }
+
+    pub(super) fn ssl_wants_write(&self) -> bool {
+        self.ssl
+            .as_ref()
+            .is_some_and(|ssl| ssl.connection.wants_write())
+    }
+
+    pub(super) fn ssl_handshake_expired(&self, now: Instant) -> bool {
+        self.ssl.as_ref().is_some_and(|ssl| {
+            ssl.connection.is_handshaking()
+                && now.duration_since(ssl.started_at) >= ssl.handshake_timeout
+        })
     }
 
     pub(super) fn is_proxying(&self) -> bool {
@@ -70,6 +120,10 @@ impl Connection {
             self.phase,
             ConnectionPhase::Resolving(_) | ConnectionPhase::Proxying(_)
         )
+    }
+
+    pub(super) fn is_writing_response(&self) -> bool {
+        matches!(self.phase, ConnectionPhase::WritingResponse)
     }
 
     pub(super) fn pending_request(&self) -> Option<&PendingRequest> {

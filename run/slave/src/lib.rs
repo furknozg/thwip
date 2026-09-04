@@ -14,6 +14,9 @@ pub use router::{response_bytes, response_bytes_with_body, route, select_server}
 
 mod proxy;
 
+mod ssl;
+pub use ssl::{load_ssl_configs, LoadedSslConfig};
+
 mod load_balancer;
 pub use load_balancer::{BalanceError, UpstreamBalancer};
 

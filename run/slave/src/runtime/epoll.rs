@@ -1,7 +1,7 @@
 use super::{
     DnsLimits, ProxyLimits, Runtime, ShutdownHandle, WorkerContext, WorkerLimits, WorkerMetrics,
 };
-use crate::BoundListenerGroup;
+use crate::{load_ssl_configs, BoundListenerGroup};
 use proxy_common::Server;
 use std::io;
 
@@ -44,8 +44,10 @@ pub fn run_epoll_with_shutdown(
     max_events: usize,
     shutdown: ShutdownHandle,
 ) -> io::Result<()> {
+    let ssl_configs = load_ssl_configs(&servers)?;
     EpollRuntime { max_events }.run(WorkerContext {
         listener_groups,
+        ssl_configs,
         servers,
         shutdown,
         limits: WorkerLimits::default(),

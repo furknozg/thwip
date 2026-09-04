@@ -1,0 +1,13 @@
+worker_count = 1
+
+[runtime]
+type = "epoll"
+
+[[http.servers]]
+server_name = "localhost"
+listen = "127.0.0.1:8443"
+ssl = { certificate_path = "examples/config/ssl-test/cert.pem", private_key_path = "examples/config/ssl-test/key.pem" }
+
+[[http.servers.locations]]
+matcher = { type = "exact", path = "/health" }
+action = { type = "response", status = 200, body = "OK" }

@@ -125,6 +125,7 @@ fn start_worker_with_proxy_limits(
             default_server: 0,
             server_indices: (0..servers.len()).collect(),
         }],
+        ssl_configs: vec![None; servers.len()],
         servers,
         shutdown: shutdown.clone(),
         limits,

@@ -1,4 +1,4 @@
-use crate::BoundListenerGroup;
+use crate::{BoundListenerGroup, LoadedSslConfig};
 use proxy_common::{DnsConfig, ProxyTimeoutConfig, Server, WorkerConfig};
 #[cfg(target_os = "linux")]
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -78,6 +78,7 @@ impl ShutdownHandle {
 pub struct WorkerContext {
     pub listener_groups: Vec<BoundListenerGroup>,
     pub servers: Vec<Server>,
+    pub ssl_configs: Vec<Option<LoadedSslConfig>>,
     pub shutdown: ShutdownHandle,
     pub limits: WorkerLimits,
     pub proxy_limits: ProxyLimits,

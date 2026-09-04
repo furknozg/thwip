@@ -1,0 +1,19 @@
+# Local HTTPS example. The certificate and key are self-signed test fixtures;
+# replace both paths with real, protected production material before deploying.
+worker_count = 1
+
+[runtime]
+type = "auto"
+
+[[http.servers]]
+server_name = "localhost"
+listen = "127.0.0.1:8443"
+ssl = { certificate_path = "examples/config/ssl-test/cert.pem", private_key_path = "examples/config/ssl-test/key.pem", handshake_timeout_ms = 10000, protocols = ["tlsv1_2", "tlsv1_3"], ciphers = ["tls13_aes_256_gcm_sha384", "tls13_aes_128_gcm_sha256", "tls13_chacha20_poly1305_sha256", "tls_ecdhe_ecdsa_with_aes_256_gcm_sha384", "tls_ecdhe_ecdsa_with_aes_128_gcm_sha256", "tls_ecdhe_ecdsa_with_chacha20_poly1305_sha256", "tls_ecdhe_rsa_with_aes_256_gcm_sha384", "tls_ecdhe_rsa_with_aes_128_gcm_sha256", "tls_ecdhe_rsa_with_chacha20_poly1305_sha256"] }
+
+[[http.servers.locations]]
+matcher = { type = "exact", path = "/health" }
+action = { type = "response", status = 200, body = "OK" }
+
+[[http.servers.locations]]
+matcher = { type = "prefix", path = "/" }
+action = { type = "response", status = 404, body = "Not found" }

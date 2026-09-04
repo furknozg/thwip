@@ -2,8 +2,9 @@ use proxy_common::{AsyncRuntimeConfig, Config};
 use std::io;
 
 use crate::{
-    bind_worker_listeners, DnsLimits, EpollRuntime, IoUringRuntime, KqueueRuntime, ProxyLimits,
-    Runtime, ShutdownHandle, WorkerContext, WorkerLimits, WorkerMetrics,
+    bind_worker_listeners, load_ssl_configs, DnsLimits, EpollRuntime, IoUringRuntime,
+    KqueueRuntime, ProxyLimits, Runtime, ShutdownHandle, WorkerContext, WorkerLimits,
+    WorkerMetrics,
 };
 
 pub fn start_worker(cpu_id: usize, config: &Config) -> io::Result<()> {
@@ -13,10 +14,12 @@ pub fn start_worker(cpu_id: usize, config: &Config) -> io::Result<()> {
     let runtime = select_runtime(&config.runtime);
     let runtime_name = runtime.name();
     let metrics = WorkerMetrics::default();
+    let ssl_configs = load_ssl_configs(&config.http.servers)?;
     let listener_groups = bind_worker_listeners(config)?;
     let context = WorkerContext {
         listener_groups,
         servers: config.http.servers.clone(),
+        ssl_configs,
         shutdown,
         limits: WorkerLimits::from_config(&config.worker),
         proxy_limits: ProxyLimits::from_config(&config.proxy),

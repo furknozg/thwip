@@ -346,6 +346,56 @@ pub struct Server {
     pub server_name: Option<String>,
     pub locations: Vec<Location>,
     pub listen: SocketAddr,
+    #[serde(default)]
+    pub ssl: Option<SslServerConfig>,
+}
+
+/// SSL/TLS termination settings for one client-facing server.
+///
+/// The public configuration name uses the familiar `ssl` term. The wire
+/// protocol is TLS; SSLv2 and SSLv3 are never supported.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SslServerConfig {
+    pub certificate_path: String,
+    pub private_key_path: String,
+    #[serde(
+        default = "default_tls_handshake_timeout_ms",
+        deserialize_with = "deserialize_positive_u64"
+    )]
+    pub handshake_timeout_ms: u64,
+    #[serde(default = "default_ssl_protocols")]
+    pub protocols: Vec<SslProtocol>,
+    #[serde(default = "default_ssl_ciphers")]
+    pub ciphers: Vec<SslCipher>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SslProtocol {
+    Tlsv1_2,
+    Tlsv1_3,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SslCipher {
+    #[serde(rename = "tls13_aes_256_gcm_sha384")]
+    Tls13Aes256GcmSha384,
+    #[serde(rename = "tls13_aes_128_gcm_sha256")]
+    Tls13Aes128GcmSha256,
+    #[serde(rename = "tls13_chacha20_poly1305_sha256")]
+    Tls13Chacha20Poly1305Sha256,
+    #[serde(rename = "tls_ecdhe_ecdsa_with_aes_256_gcm_sha384")]
+    TlsEcdheEcdsaWithAes256GcmSha384,
+    #[serde(rename = "tls_ecdhe_ecdsa_with_aes_128_gcm_sha256")]
+    TlsEcdheEcdsaWithAes128GcmSha256,
+    #[serde(rename = "tls_ecdhe_ecdsa_with_chacha20_poly1305_sha256")]
+    TlsEcdheEcdsaWithChacha20Poly1305Sha256,
+    #[serde(rename = "tls_ecdhe_rsa_with_aes_256_gcm_sha384")]
+    TlsEcdheRsaWithAes256GcmSha384,
+    #[serde(rename = "tls_ecdhe_rsa_with_aes_128_gcm_sha256")]
+    TlsEcdheRsaWithAes128GcmSha256,
+    #[serde(rename = "tls_ecdhe_rsa_with_chacha20_poly1305_sha256")]
+    TlsEcdheRsaWithChacha20Poly1305Sha256,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -405,6 +455,28 @@ const fn default_upstream_weight() -> u32 {
     1
 }
 
+const fn default_tls_handshake_timeout_ms() -> u64 {
+    10_000
+}
+
+fn default_ssl_protocols() -> Vec<SslProtocol> {
+    vec![SslProtocol::Tlsv1_2, SslProtocol::Tlsv1_3]
+}
+
+fn default_ssl_ciphers() -> Vec<SslCipher> {
+    vec![
+        SslCipher::Tls13Aes256GcmSha384,
+        SslCipher::Tls13Aes128GcmSha256,
+        SslCipher::Tls13Chacha20Poly1305Sha256,
+        SslCipher::TlsEcdheEcdsaWithAes256GcmSha384,
+        SslCipher::TlsEcdheEcdsaWithAes128GcmSha256,
+        SslCipher::TlsEcdheEcdsaWithChacha20Poly1305Sha256,
+        SslCipher::TlsEcdheRsaWithAes256GcmSha384,
+        SslCipher::TlsEcdheRsaWithAes128GcmSha256,
+        SslCipher::TlsEcdheRsaWithChacha20Poly1305Sha256,
+    ]
+}
+
 fn deserialize_upstream_weight<'de, D>(deserializer: D) -> Result<u32, D::Error>
 where
     D: Deserializer<'de>,
@@ -440,6 +512,7 @@ impl Default for Config {
                     server_name: None,
                     locations: Vec::new(),
                     listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 8089),
+                    ssl: None,
                 }],
             },
             runtime: AsyncRuntimeConfig::default(),
@@ -476,6 +549,20 @@ impl Config {
             validate_endpoints(&group.servers)?;
         }
         for server in &self.http.servers {
+            if let Some(ssl) = &server.ssl {
+                if ssl.certificate_path.trim().is_empty() {
+                    return Err("SSL certificate_path must not be empty".to_owned());
+                }
+                if ssl.private_key_path.trim().is_empty() {
+                    return Err("SSL private_key_path must not be empty".to_owned());
+                }
+                if ssl.protocols.is_empty() {
+                    return Err("SSL protocols must not be empty".to_owned());
+                }
+                if ssl.ciphers.is_empty() {
+                    return Err("SSL ciphers must not be empty".to_owned());
+                }
+            }
             for location in &server.locations {
                 if let Action::Proxy {
                     upstream,
