@@ -7,8 +7,9 @@ use super::{
     IoUringRuntime,
 };
 use crate::{
-    parse_request_head, response_bytes, route, select_server, BodyFramingError, DnsLimits,
-    ProxyLimits, RequestHeadParse, ShutdownHandle, WorkerContext, WorkerLimits,
+    parse_request_head, response_bytes, route, select_server, static_response_bytes,
+    BodyFramingError, DnsLimits, ProxyLimits, RequestHeadParse, ShutdownHandle, WorkerContext,
+    WorkerLimits,
 };
 use io_uring::{cqueue, opcode, squeue, types, IoUring};
 use proxy_common::Action;
@@ -448,9 +449,11 @@ impl IoUringWorker {
         let response = match self.servers.get(server_index) {
             Some(server) => match route(server, &request.head.target) {
                 Some(Action::Response { status, body }) => response_bytes(*status, body),
-                Some(Action::Static { .. }) => {
-                    response_bytes(501, "static action is not implemented by io_uring")
-                }
+                Some(Action::Static { directory }) => static_response_bytes(
+                    directory.as_ref(),
+                    &request.head.method,
+                    &request.head.target,
+                ),
                 Some(Action::Proxy { .. }) => {
                     response_bytes(501, "proxy action is not implemented by io_uring")
                 }
