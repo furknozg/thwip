@@ -5,6 +5,7 @@ fn server() -> Server {
     Server {
         server_name: None,
         listen: "127.0.0.1:0".parse().unwrap(),
+        ssl: None,
         locations: vec![
             Location {
                 matcher: PathMatcher::Prefix { path: "/".into() },

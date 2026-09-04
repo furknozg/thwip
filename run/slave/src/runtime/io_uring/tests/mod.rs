@@ -45,7 +45,7 @@ fn connection_generations_wrap_without_using_zero() {
 
 fn listener(mode: AcceptMode) -> UringListener {
     let (socket, _peer) = UnixStream::pair().unwrap();
-    UringListener::new(OwnedFd::from(socket), 0, vec![0], mode)
+    UringListener::new(OwnedFd::from(socket), 0, vec![0], None, mode)
 }
 
 #[test]

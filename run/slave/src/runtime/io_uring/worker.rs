@@ -499,6 +499,7 @@ impl IoUringWorker {
         }
 
         let received = received.unwrap();
+        let mut tls_wants_write = false;
         let received = if let Some(ssl) = &mut connection.ssl {
             let mut encrypted = Cursor::new(received);
             if let Err(error) = ssl.connection.read_tls(&mut encrypted) {
@@ -520,20 +521,29 @@ impl IoUringWorker {
                 }
             }
             if ssl.connection.wants_write() {
-                self.submit_send(ConnectionId {
-                    slot: operation.slot,
-                    generation: operation.generation,
-                })?;
+                tls_wants_write = true;
             }
             plaintext
         } else {
             received
         };
+        if tls_wants_write {
+            self.submit_send(ConnectionId {
+                slot: operation.slot,
+                generation: operation.generation,
+            })?;
+        }
         if received.is_empty() {
             return self.submit_recv(ConnectionId {
                 slot: operation.slot,
                 generation: operation.generation,
             });
+        }
+        let Some(connection) = self.connections.get_mut(slot) else {
+            return Ok(());
+        };
+        if !connection.matches_generation(operation.generation) {
+            return Ok(());
         }
         let received_len = received.len();
         self.metrics.read_bytes(received_len);

@@ -45,6 +45,7 @@ fn server_with_action(name: &str, action: Action, listen: SocketAddr) -> Server 
     Server {
         server_name: Some(name.into()),
         listen,
+        ssl: None,
         locations: vec![Location {
             matcher: PathMatcher::Prefix { path: "/".into() },
             action,

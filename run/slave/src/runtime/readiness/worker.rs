@@ -954,7 +954,8 @@ impl ReadinessWorker {
             self.remove_connection(connection_id)?;
         } else if write_finished
             && self.is_current(connection_id)
-            && self.connections[connection_id.slot].is_writing_response()
+            && (self.connections[connection_id.slot].is_writing_response()
+                || self.connections[connection_id.slot].is_proxying())
         {
             if self.connections[connection_id.slot].static_stream.is_some() {
                 return self.advance_static_stream(connection_id);
