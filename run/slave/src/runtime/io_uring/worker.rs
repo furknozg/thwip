@@ -39,6 +39,7 @@ pub struct IoUringWorker {
     shutdown_eventfd: Arc<OwnedFd>,
     shutdown_value: Box<u64>,
     shutting_down: bool,
+    shutdown_started: Option<std::time::Instant>,
     cancellation_started: bool,
     pending_cancellations: usize,
     dns_eventfd: Arc<OwnedFd>,
@@ -97,6 +98,7 @@ impl IoUringWorker {
             shutdown_eventfd,
             shutdown_value: Box::new(0),
             shutting_down: false,
+            shutdown_started: None,
             cancellation_started: false,
             pending_cancellations: 0,
             dns_eventfd,
@@ -228,11 +230,6 @@ impl IoUringWorker {
             return Ok(());
         }
         connection.mark_write_completed();
-        if self.shutting_down {
-            self.connections.remove(slot);
-            return Ok(());
-        }
-
         if result < 0 {
             let error = io::Error::from_raw_os_error(-result);
             if matches!(error.raw_os_error(), Some(libc::EAGAIN | libc::EINTR)) {
@@ -370,10 +367,6 @@ impl IoUringWorker {
             return Ok(());
         }
         connection.mark_read_completed();
-        if self.shutting_down {
-            self.connections.remove(slot);
-            return Ok(());
-        }
         if connection
             .request_buffer
             .len()
@@ -691,15 +684,10 @@ impl IoUringWorker {
             slot: operation.slot,
             generation: operation.generation,
         };
-        let shutting_down = self.shutting_down;
         let Some(proxy) = self.current_proxy_mut(connection_id) else {
             return Ok(());
         };
         proxy.operation_pending = false;
-        if shutting_down {
-            self.connections.remove(operation.slot as usize);
-            return Ok(());
-        }
         if proxy.timed_out {
             return self.fail_proxy(connection_id, 504, "upstream connect timed out");
         }
@@ -715,15 +703,10 @@ impl IoUringWorker {
             slot: operation.slot,
             generation: operation.generation,
         };
-        let shutting_down = self.shutting_down;
         let Some(proxy) = self.current_proxy_mut(connection_id) else {
             return Ok(());
         };
         proxy.operation_pending = false;
-        if shutting_down {
-            self.connections.remove(operation.slot as usize);
-            return Ok(());
-        }
         if proxy.timed_out {
             return self.fail_proxy(connection_id, 504, "upstream request write timed out");
         }
@@ -756,16 +739,11 @@ impl IoUringWorker {
             slot: operation.slot,
             generation: operation.generation,
         };
-        let shutting_down = self.shutting_down;
         let max_write_buffer_size = self.limits.max_write_buffer_size;
         let Some(proxy) = self.current_proxy_mut(connection_id) else {
             return Ok(());
         };
         proxy.operation_pending = false;
-        if shutting_down {
-            self.connections.remove(operation.slot as usize);
-            return Ok(());
-        }
         if proxy.timed_out {
             return self.fail_proxy(connection_id, 504, "upstream response timed out");
         }
@@ -918,9 +896,9 @@ impl IoUringWorker {
                 .user_data(super::operation::PROXY_CANCEL_USER_DATA);
             push_entry(&mut self.ring, &entry)?;
         }
-        if !self.shutting_down {
-            self.submit_timer_read()?;
-        }
+        // The periodic timer also wakes a draining worker so its graceful
+        // shutdown deadline is enforced even when clients are otherwise idle.
+        self.submit_timer_read()?;
         Ok(())
     }
 
@@ -929,54 +907,15 @@ impl IoUringWorker {
             return Ok(());
         }
         self.shutting_down = true;
+        self.shutdown_started = Some(std::time::Instant::now());
         self.cancellation_started = true;
 
         let mut targets = Vec::new();
-        targets.push(super::operation::DNS_USER_DATA);
-        targets.push(super::operation::TIMER_USER_DATA);
         for (index, listener) in self.listeners.iter().enumerate() {
             if listener.accept_pending() {
                 targets.push(listener.accept_operation(index)?.encode());
             }
         }
-        let mut idle_connections = Vec::new();
-        for (slot, connection) in &self.connections {
-            let operation_slot = u32::try_from(slot).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidInput, "connection slot is too large")
-            })?;
-            if connection.read_pending {
-                targets.push(OperationId::read(operation_slot, connection.generation).encode());
-            } else if connection.write_pending {
-                targets.push(OperationId::write(operation_slot, connection.generation).encode());
-            } else if let Some(proxy) = connection.proxy.as_ref() {
-                if proxy.operation_pending {
-                    let operation = match proxy.phase {
-                        ProxyPhase::Resolving => {
-                            idle_connections.push(slot);
-                            continue;
-                        }
-                        ProxyPhase::Connecting => {
-                            OperationId::proxy_connect(operation_slot, connection.generation)
-                        }
-                        ProxyPhase::WritingRequest => {
-                            OperationId::proxy_write(operation_slot, connection.generation)
-                        }
-                        ProxyPhase::ReadingResponse => {
-                            OperationId::proxy_read(operation_slot, connection.generation)
-                        }
-                    };
-                    targets.push(operation.encode());
-                } else {
-                    idle_connections.push(slot);
-                }
-            } else {
-                idle_connections.push(slot);
-            }
-        }
-        for slot in idle_connections {
-            self.connections.remove(slot);
-        }
-
         self.pending_cancellations = targets.len();
         for target in targets {
             let entry = opcode::AsyncCancel::new(target)
@@ -995,6 +934,11 @@ impl IoUringWorker {
                 .iter()
                 .all(|listener| !listener.accept_pending())
             && self.connections.is_empty()
+    }
+
+    fn shutdown_deadline_reached(&self) -> bool {
+        self.shutdown_started
+            .is_some_and(|started| started.elapsed() >= self.limits.drain_timeout)
     }
 
     /// Submit initial operations and dispatch completions until shutdown.
@@ -1021,6 +965,13 @@ impl IoUringWorker {
                 self.begin_shutdown()?;
             }
             if self.shutting_down && self.shutdown_drained() {
+                return Ok(());
+            }
+            if self.shutting_down && self.shutdown_deadline_reached() {
+                eprintln!(
+                    "io_uring graceful shutdown deadline reached with {} active connection(s)",
+                    self.connections.len()
+                );
                 return Ok(());
             }
             self.ring.submit_and_wait(1)?;
