@@ -17,7 +17,7 @@ resolver_threads = 2
 timeout_ms = 3000
 
 [runtime]
-type = "kqueue"
+type = "auto"
 max_events = 1024
 
 [[http.servers]]
@@ -42,7 +42,7 @@ listen = "127.0.0.1:8081"
 
 [[http.servers.locations]]
 matcher = { type = "prefix", path = "/" }
-action = { type = "static", directory = "./examples/public" }
+action = { type = "static", directory = "./public" }
 
 [[http.servers.locations]]
 matcher = { type = "prefix", path = "/api" }
