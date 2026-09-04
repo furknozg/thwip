@@ -108,7 +108,9 @@ impl IoUringWorker {
             OperationKind::Read => {
                 self.handle_read_completion(completion.operation, completion.result)
             }
-            OperationKind::Write => Ok(()),
+            OperationKind::Write => {
+                self.handle_write_completion(completion.operation, completion.result)
+            }
         }
     }
 
@@ -139,6 +141,91 @@ impl IoUringWorker {
             self.submit_accept(listener_idx)?;
         }
         Ok(())
+    }
+
+    fn submit_send(&mut self, connection_id: ConnectionId) -> io::Result<()> {
+        let connection = self
+            .connections
+            .get_mut(connection_id.slot as usize)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "connection slot is unavailable",
+                )
+            })?;
+        if !connection.matches_generation(connection_id.generation) || connection.write_pending {
+            return Ok(());
+        }
+        let remaining = &connection.write_buffer[connection.write_offset..];
+        let write_len = u32::try_from(remaining.len()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "response exceeds io_uring send length capacity",
+            )
+        })?;
+        let entry = opcode::Send::new(
+            types::Fd(connection.socket.as_raw_fd()),
+            remaining.as_ptr(),
+            write_len,
+        )
+        .flags(libc::MSG_NOSIGNAL)
+        .build()
+        .user_data(OperationId::write(connection_id.slot, connection_id.generation).encode());
+
+        unsafe { self.ring.submission().push(&entry) }.map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "io_uring submission queue is full",
+            )
+        })?;
+        connection.mark_write_submitted();
+        Ok(())
+    }
+
+    fn handle_write_completion(&mut self, operation: OperationId, result: i32) -> io::Result<()> {
+        let slot = operation.slot as usize;
+        let Some(connection) = self.connections.get_mut(slot) else {
+            return Ok(());
+        };
+        if !connection.matches_generation(operation.generation) {
+            return Ok(());
+        }
+        connection.mark_write_completed();
+
+        if result < 0 {
+            let error = io::Error::from_raw_os_error(-result);
+            if matches!(error.raw_os_error(), Some(libc::EAGAIN | libc::EINTR)) {
+                return self.submit_send(ConnectionId {
+                    slot: operation.slot,
+                    generation: operation.generation,
+                });
+            }
+            eprintln!("connection {slot} send failed: {error}");
+            self.connections.remove(slot);
+            return Ok(());
+        }
+        if result == 0 {
+            self.connections.remove(slot);
+            return Ok(());
+        }
+
+        let written = result as usize;
+        let remaining = connection.write_buffer.len() - connection.write_offset;
+        if written > remaining {
+            eprintln!("connection {slot} returned an invalid send length");
+            self.connections.remove(slot);
+            return Ok(());
+        }
+        connection.write_offset += written;
+        if connection.write_offset == connection.write_buffer.len() {
+            self.connections.remove(slot);
+            return Ok(());
+        }
+
+        self.submit_send(ConnectionId {
+            slot: operation.slot,
+            generation: operation.generation,
+        })
     }
 
     fn insert_connection(
@@ -351,7 +438,7 @@ impl IoUringWorker {
         } else {
             self.connections[slot].queue_response(response);
         }
-        Ok(())
+        self.submit_send(connection_id)
     }
 
     /// Submit initial operations and dispatch completions until shutdown.

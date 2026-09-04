@@ -79,6 +79,14 @@ impl UringConnection {
         self.write_buffer = response;
         self.write_offset = 0;
     }
+
+    pub(super) fn mark_write_submitted(&mut self) {
+        self.write_pending = true;
+    }
+
+    pub(super) fn mark_write_completed(&mut self) {
+        self.write_pending = false;
+    }
 }
 
 pub(super) fn next_generation(previous: u16) -> u16 {
