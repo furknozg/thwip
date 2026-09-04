@@ -36,3 +36,9 @@ mod worker;
 
 #[cfg(target_os = "linux")]
 mod listener;
+
+#[cfg(target_os = "linux")]
+mod resolver;
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests;

@@ -1,7 +1,6 @@
-#![allow(dead_code)] // Fields become active when Recv submission is added.
-
 use crate::RequestHead;
-use std::os::fd::OwnedFd;
+use socket2::SockAddr;
+use std::{os::fd::OwnedFd, time::Instant};
 
 pub(super) struct UringConnection {
     pub(super) socket: OwnedFd,
@@ -15,6 +14,66 @@ pub(super) struct UringConnection {
     pub(super) write_buffer: Vec<u8>,
     pub(super) write_offset: usize,
     pub(super) write_pending: bool,
+    pub(super) proxy: Option<UringProxy>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ProxyPhase {
+    Resolving,
+    Connecting,
+    WritingRequest,
+    ReadingResponse,
+}
+
+impl ProxyPhase {
+    pub(super) const fn timeout_message(self) -> &'static str {
+        match self {
+            Self::Resolving => "upstream DNS resolution timed out",
+            Self::Connecting => "upstream connect timed out",
+            Self::WritingRequest => "upstream request write timed out",
+            Self::ReadingResponse => "upstream response timed out",
+        }
+    }
+}
+
+pub(super) struct UringProxy {
+    pub(super) upstream: Option<OwnedFd>,
+    pub(super) address: Option<Box<SockAddr>>,
+    pub(super) request_buffer: Vec<u8>,
+    pub(super) request_offset: usize,
+    pub(super) response_started: bool,
+    pub(super) phase: ProxyPhase,
+    pub(super) progress_at: Instant,
+    pub(super) operation_pending: bool,
+    pub(super) timed_out: bool,
+    pub(super) read_buffer: Box<[u8]>,
+}
+
+impl UringProxy {
+    pub(super) fn resolving(request_buffer: Vec<u8>, buffer_size: usize) -> Self {
+        Self {
+            upstream: None,
+            address: None,
+            request_buffer,
+            request_offset: 0,
+            response_started: false,
+            phase: ProxyPhase::Resolving,
+            progress_at: Instant::now(),
+            operation_pending: false,
+            timed_out: false,
+            read_buffer: vec![0; buffer_size].into_boxed_slice(),
+        }
+    }
+
+    pub(super) fn transition(&mut self, phase: ProxyPhase) {
+        self.phase = phase;
+        self.progress_at = Instant::now();
+        self.timed_out = false;
+    }
+
+    pub(super) fn record_progress(&mut self) {
+        self.progress_at = Instant::now();
+    }
 }
 
 pub(super) struct PendingRequest {
@@ -53,6 +112,7 @@ impl UringConnection {
             write_buffer: Vec::new(),
             write_offset: 0,
             write_pending: false,
+            proxy: None,
         }
     }
 

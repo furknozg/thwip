@@ -1,11 +1,12 @@
-#![allow(dead_code)] // Scaffolding until the first SQE/CQE dispatch milestone.
-
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum OperationKind {
     Accept = 1,
     Read = 2,
     Write = 3,
+    ProxyConnect = 4,
+    ProxyWrite = 5,
+    ProxyRead = 6,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,6 +18,9 @@ pub(super) struct OperationId {
 
 pub const CONTROL_USER_DATA: u64 = 0;
 pub const CANCEL_USER_DATA: u64 = u64::MAX;
+pub const DNS_USER_DATA: u64 = u64::MAX - 1;
+pub const TIMER_USER_DATA: u64 = u64::MAX - 2;
+pub const PROXY_CANCEL_USER_DATA: u64 = u64::MAX - 3;
 
 impl OperationId {
     /// Encode this operation into the `user_data` field carried by an SQE/CQE.
@@ -30,6 +34,9 @@ impl OperationId {
             1 => OperationKind::Accept,
             2 => OperationKind::Read,
             3 => OperationKind::Write,
+            4 => OperationKind::ProxyConnect,
+            5 => OperationKind::ProxyWrite,
+            6 => OperationKind::ProxyRead,
             _ => return None,
         };
 
@@ -66,6 +73,30 @@ impl OperationId {
             slot,
             generation,
             kind: OperationKind::Write,
+        }
+    }
+
+    pub const fn proxy_connect(slot: u32, generation: u16) -> Self {
+        Self {
+            slot,
+            generation,
+            kind: OperationKind::ProxyConnect,
+        }
+    }
+
+    pub const fn proxy_write(slot: u32, generation: u16) -> Self {
+        Self {
+            slot,
+            generation,
+            kind: OperationKind::ProxyWrite,
+        }
+    }
+
+    pub const fn proxy_read(slot: u32, generation: u16) -> Self {
+        Self {
+            slot,
+            generation,
+            kind: OperationKind::ProxyRead,
         }
     }
 }

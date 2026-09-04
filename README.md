@@ -10,9 +10,9 @@ readiness path, parse framed HTTP/1.x requests, select a virtual host from its
 `Host` header, return configured fixed responses, and serve small static files.
 The initial HTTP upstream proxy streams through bounded buffers with
 backpressure and resolves hostnames on a background pool. Keep-alive, chunked
-request bodies, upstream pooling/TLS, and a production-ready `io_uring` runtime
-remain pending. The direct `io_uring` driver currently reaches accept and
-generation-safe connection storage, but does not read or answer HTTP requests.
+request bodies, upstream pooling/TLS, and production hardening for `io_uring`
+remain pending. The direct `io_uring` driver can accept, parse, route, and send
+HTTP responses, including static files and streaming upstream proxies.
 
 ## Goals
 
@@ -147,19 +147,19 @@ generation-safe connection storage, but does not read or answer HTTP requests.
   safe accepted-FD ownership, and accept resubmission.
 - [x] Retain accepted sockets in a generation-aware connection slab with one
   stable boxed receive buffer per connection and enforce the connection cap.
-- [ ] Submit one `Recv` per connection, copy completed bytes into an HTTP input
+- [x] Submit one `Recv` per connection, copy completed bytes into an HTTP input
   buffer, handle EOF/errors, and reject stale read completions.
-- [ ] Parse complete HTTP requests, select virtual hosts/routes, and build the
+- [x] Parse complete HTTP requests, select virtual hosts/routes, and build the
   same responses as the readiness worker.
-- [ ] Submit `Send` operations with correct partial-write offsets, bounded
+- [x] Submit `Send` operations with correct partial-write offsets, bounded
   output, and stale write-completion rejection.
-- [ ] Add static-file and upstream-proxy parity, including DNS and timeout
+- [x] Add static-file and upstream-proxy parity, including DNS and timeout
   behavior shared with the readiness runtime.
 - [ ] Add multishot accept behind capability checks while retaining the
   single-shot resubmission fallback.
 - [ ] Use fixed/provided buffers only after a safe buffer-ownership and return
   protocol is defined; wire `buf_ring_size` and `buf_size` into that design.
-- [ ] Define cancellation and shutdown behavior for every outstanding request;
+- [x] Define cancellation and shutdown behavior for every outstanding request;
   wake the ring, cancel accepts/reads/writes, and drain completions before
   releasing resources.
 - [ ] Add native Linux tests for operation encoding, accept/resubmission,

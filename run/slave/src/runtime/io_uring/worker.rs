@@ -1,20 +1,24 @@
 use super::{
     connection::{
-        next_generation, CompletedRequest, ConnectionId, PendingRequest, UringConnection,
+        next_generation, CompletedRequest, ConnectionId, PendingRequest, ProxyPhase,
+        UringConnection, UringProxy,
     },
     listener::UringListener,
     operation::{OperationId, OperationKind},
+    resolver::{DnsResolver, ResolveResult},
     IoUringRuntime,
 };
+use crate::proxy::Upstream;
 use crate::{
     parse_request_head, response_bytes, route, select_server, static_response_bytes,
-    BodyFramingError, DnsLimits, ProxyLimits, RequestHeadParse, ShutdownHandle, WorkerContext,
-    WorkerLimits,
+    BodyFramingError, DnsLimits, ProxyLimits, RequestHead, RequestHeadParse, ShutdownHandle,
+    WorkerContext, WorkerLimits,
 };
 use io_uring::{cqueue, opcode, squeue, types, IoUring};
 use proxy_common::Action;
 use proxy_common::Server;
 use slab::Slab;
+use socket2::SockAddr;
 use std::{
     io,
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
@@ -37,6 +41,11 @@ pub struct IoUringWorker {
     shutting_down: bool,
     cancellation_started: bool,
     pending_cancellations: usize,
+    dns_eventfd: Arc<OwnedFd>,
+    dns_value: Box<u64>,
+    resolver: DnsResolver,
+    timerfd: OwnedFd,
+    timer_value: Box<u64>,
 }
 
 struct Completion {
@@ -67,6 +76,12 @@ impl IoUringWorker {
         context
             .shutdown
             .install_eventfd(Arc::clone(&shutdown_eventfd));
+        let dns_eventfd = Arc::new(create_eventfd()?);
+        let resolver = DnsResolver::new(
+            context.dns_limits.resolver_threads,
+            Arc::clone(&dns_eventfd),
+        )?;
+        let timerfd = create_timerfd()?;
 
         Ok(Self {
             ring,
@@ -84,6 +99,11 @@ impl IoUringWorker {
             shutting_down: false,
             cancellation_started: false,
             pending_cancellations: 0,
+            dns_eventfd,
+            dns_value: Box::new(0),
+            resolver,
+            timerfd,
+            timer_value: Box::new(0),
         })
     }
 
@@ -126,6 +146,15 @@ impl IoUringWorker {
             }
             OperationKind::Write => {
                 self.handle_write_completion(completion.operation, completion.result)
+            }
+            OperationKind::ProxyConnect => {
+                self.handle_proxy_connect(completion.operation, completion.result)
+            }
+            OperationKind::ProxyWrite => {
+                self.handle_proxy_write(completion.operation, completion.result)
+            }
+            OperationKind::ProxyRead => {
+                self.handle_proxy_read(completion.operation, completion.result)
             }
         }
     }
@@ -240,6 +269,15 @@ impl IoUringWorker {
         }
         connection.write_offset += written;
         if connection.write_offset == connection.write_buffer.len() {
+            if let Some(proxy) = connection.proxy.as_mut() {
+                connection.write_buffer.clear();
+                connection.write_offset = 0;
+                proxy.record_progress();
+                return self.submit_proxy_read(ConnectionId {
+                    slot: operation.slot,
+                    generation: operation.generation,
+                });
+            }
             self.connections.remove(slot);
             return Ok(());
         }
@@ -440,26 +478,33 @@ impl IoUringWorker {
             self.connections.remove(slot);
             return Ok(());
         };
+        let request_head = request.head.clone();
+        let request_body = request.body.clone();
         let server_index = select_server(
             &listener.server_indices,
             listener.default_server,
-            &request.head,
+            &request_head,
             &self.servers,
         );
-        let response = match self.servers.get(server_index) {
-            Some(server) => match route(server, &request.head.target) {
-                Some(Action::Response { status, body }) => response_bytes(*status, body),
-                Some(Action::Static { directory }) => static_response_bytes(
-                    directory.as_ref(),
-                    &request.head.method,
-                    &request.head.target,
-                ),
-                Some(Action::Proxy { .. }) => {
-                    response_bytes(501, "proxy action is not implemented by io_uring")
-                }
-                None => response_bytes(404, "not found"),
-            },
-            None => response_bytes(500, "server configuration is unavailable"),
+        let action = self
+            .servers
+            .get(server_index)
+            .and_then(|server| route(server, &request_head.target))
+            .cloned();
+        let response = match action {
+            Some(Action::Response { status, body }) => response_bytes(status, &body),
+            Some(Action::Static { directory }) => static_response_bytes(
+                directory.as_ref(),
+                &request_head.method,
+                &request_head.target,
+            ),
+            Some(Action::Proxy { upstream }) => {
+                return self.start_proxy(connection_id, &upstream, &request_head, &request_body);
+            }
+            None if self.servers.get(server_index).is_none() => {
+                response_bytes(500, "server configuration is unavailable")
+            }
+            None => response_bytes(404, "not found"),
         };
         if response.len() > self.limits.max_write_buffer_size {
             self.connections[slot].queue_response(response_bytes(500, "response is too large"));
@@ -467,6 +512,340 @@ impl IoUringWorker {
             self.connections[slot].queue_response(response);
         }
         self.submit_send(connection_id)
+    }
+
+    fn start_proxy(
+        &mut self,
+        connection_id: ConnectionId,
+        upstream_url: &str,
+        request: &RequestHead,
+        body: &[u8],
+    ) -> io::Result<()> {
+        let upstream = match Upstream::parse(upstream_url) {
+            Ok(upstream) => upstream,
+            Err(error) => {
+                eprintln!("invalid upstream URL: {error}");
+                return self.queue_proxy_error(connection_id, 502, "upstream configuration failed");
+            }
+        };
+        let request_buffer = upstream.request_bytes(request, body);
+        if request_buffer.len() > self.limits.max_read_buffer_size {
+            return self.queue_proxy_error(connection_id, 502, "upstream request is too large");
+        }
+        let address = upstream.connect_address().to_owned();
+        let Some(connection) = self.connections.get_mut(connection_id.slot as usize) else {
+            return Ok(());
+        };
+        connection.proxy = Some(UringProxy::resolving(request_buffer, self.buffer_size));
+        if let Err(error) = self.resolver.resolve(connection_id, address) {
+            eprintln!("failed to schedule upstream DNS resolution: {error}");
+            return self.queue_proxy_error(connection_id, 502, "upstream DNS resolution failed");
+        }
+        Ok(())
+    }
+
+    fn submit_dns_read(&mut self) -> io::Result<()> {
+        let entry = opcode::Read::new(
+            types::Fd(self.dns_eventfd.as_raw_fd()),
+            (&mut *self.dns_value as *mut u64).cast(),
+            std::mem::size_of::<u64>() as u32,
+        )
+        .build()
+        .user_data(super::operation::DNS_USER_DATA);
+        unsafe { self.ring.submission().push(&entry) }.map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "io_uring submission queue is full",
+            )
+        })?;
+        Ok(())
+    }
+
+    fn process_dns_results(&mut self) -> io::Result<()> {
+        for result in self.resolver.drain() {
+            self.finish_resolution(result)?;
+        }
+        if !self.shutting_down {
+            self.submit_dns_read()?;
+        }
+        Ok(())
+    }
+
+    fn finish_resolution(&mut self, result: ResolveResult) -> io::Result<()> {
+        let connection_id = result.connection_id;
+        let slot = connection_id.slot as usize;
+        let Some(connection) = self.connections.get(slot) else {
+            return Ok(());
+        };
+        if !connection.matches_generation(connection_id.generation)
+            || connection
+                .proxy
+                .as_ref()
+                .is_none_or(|proxy| proxy.phase != ProxyPhase::Resolving)
+        {
+            return Ok(());
+        }
+        let addresses = match result.addresses {
+            Ok(addresses) if !addresses.is_empty() => addresses,
+            Ok(_) => return self.queue_proxy_error(connection_id, 502, "upstream has no address"),
+            Err(error) => {
+                eprintln!("upstream DNS resolution failed: {error}");
+                return self.queue_proxy_error(
+                    connection_id,
+                    502,
+                    "upstream DNS resolution failed",
+                );
+            }
+        };
+        let address = addresses[0];
+        let socket = match create_upstream_socket(address) {
+            Ok(socket) => socket,
+            Err(error) => {
+                eprintln!("failed to create upstream socket: {error}");
+                return self.queue_proxy_error(connection_id, 502, "upstream connection failed");
+            }
+        };
+        let proxy = self.connections[slot].proxy.as_mut().unwrap();
+        proxy.upstream = Some(socket);
+        proxy.address = Some(Box::new(SockAddr::from(address)));
+        proxy.transition(ProxyPhase::Connecting);
+        if let Err(error) = self.submit_proxy_connect(connection_id) {
+            eprintln!("failed to submit upstream connect: {error}");
+            return self.queue_proxy_error(connection_id, 502, "upstream connection failed");
+        }
+        Ok(())
+    }
+
+    fn submit_proxy_connect(&mut self, connection_id: ConnectionId) -> io::Result<()> {
+        let proxy = self.connections[connection_id.slot as usize]
+            .proxy
+            .as_mut()
+            .unwrap();
+        let socket = proxy.upstream.as_ref().unwrap();
+        let address = proxy.address.as_ref().unwrap();
+        let entry = opcode::Connect::new(
+            types::Fd(socket.as_raw_fd()),
+            address.as_ptr(),
+            address.len(),
+        )
+        .build()
+        .user_data(
+            OperationId::proxy_connect(connection_id.slot, connection_id.generation).encode(),
+        );
+        unsafe { self.ring.submission().push(&entry) }.map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "io_uring submission queue is full",
+            )
+        })?;
+        proxy.operation_pending = true;
+        Ok(())
+    }
+
+    fn submit_proxy_write(&mut self, connection_id: ConnectionId) -> io::Result<()> {
+        let proxy = self.connections[connection_id.slot as usize]
+            .proxy
+            .as_mut()
+            .unwrap();
+        let remaining = &proxy.request_buffer[proxy.request_offset..];
+        let length = u32::try_from(remaining.len()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "upstream request is too large")
+        })?;
+        let entry = opcode::Send::new(
+            types::Fd(proxy.upstream.as_ref().unwrap().as_raw_fd()),
+            remaining.as_ptr(),
+            length,
+        )
+        .flags(libc::MSG_NOSIGNAL)
+        .build()
+        .user_data(OperationId::proxy_write(connection_id.slot, connection_id.generation).encode());
+        unsafe { self.ring.submission().push(&entry) }.map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "io_uring submission queue is full",
+            )
+        })?;
+        proxy.operation_pending = true;
+        Ok(())
+    }
+
+    fn submit_proxy_read(&mut self, connection_id: ConnectionId) -> io::Result<()> {
+        let proxy = self.connections[connection_id.slot as usize]
+            .proxy
+            .as_mut()
+            .unwrap();
+        let length = u32::try_from(proxy.read_buffer.len()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "upstream read buffer is too large",
+            )
+        })?;
+        let entry = opcode::Recv::new(
+            types::Fd(proxy.upstream.as_ref().unwrap().as_raw_fd()),
+            proxy.read_buffer.as_mut_ptr(),
+            length,
+        )
+        .build()
+        .user_data(OperationId::proxy_read(connection_id.slot, connection_id.generation).encode());
+        unsafe { self.ring.submission().push(&entry) }.map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "io_uring submission queue is full",
+            )
+        })?;
+        proxy.operation_pending = true;
+        Ok(())
+    }
+
+    fn handle_proxy_connect(&mut self, operation: OperationId, result: i32) -> io::Result<()> {
+        let connection_id = ConnectionId {
+            slot: operation.slot,
+            generation: operation.generation,
+        };
+        let shutting_down = self.shutting_down;
+        let Some(proxy) = self.current_proxy_mut(connection_id) else {
+            return Ok(());
+        };
+        proxy.operation_pending = false;
+        if shutting_down {
+            self.connections.remove(operation.slot as usize);
+            return Ok(());
+        }
+        if proxy.timed_out {
+            return self.fail_proxy(connection_id, 504, "upstream connect timed out");
+        }
+        if result < 0 {
+            return self.fail_proxy(connection_id, 502, "upstream connection failed");
+        }
+        proxy.transition(ProxyPhase::WritingRequest);
+        self.submit_proxy_write(connection_id)
+    }
+
+    fn handle_proxy_write(&mut self, operation: OperationId, result: i32) -> io::Result<()> {
+        let connection_id = ConnectionId {
+            slot: operation.slot,
+            generation: operation.generation,
+        };
+        let shutting_down = self.shutting_down;
+        let Some(proxy) = self.current_proxy_mut(connection_id) else {
+            return Ok(());
+        };
+        proxy.operation_pending = false;
+        if shutting_down {
+            self.connections.remove(operation.slot as usize);
+            return Ok(());
+        }
+        if proxy.timed_out {
+            return self.fail_proxy(connection_id, 504, "upstream request write timed out");
+        }
+        if result < 0 {
+            let error = io::Error::from_raw_os_error(-result);
+            if matches!(error.raw_os_error(), Some(libc::EAGAIN | libc::EINTR)) {
+                return self.submit_proxy_write(connection_id);
+            }
+            return self.fail_proxy(connection_id, 502, "upstream request write failed");
+        }
+        if result == 0 {
+            return self.fail_proxy(connection_id, 502, "upstream request write failed");
+        }
+        let written = result as usize;
+        if written > proxy.request_buffer.len() - proxy.request_offset {
+            return self.fail_proxy(connection_id, 502, "invalid upstream write completion");
+        }
+        proxy.request_offset += written;
+        proxy.record_progress();
+        if proxy.request_offset == proxy.request_buffer.len() {
+            proxy.transition(ProxyPhase::ReadingResponse);
+            self.submit_proxy_read(connection_id)
+        } else {
+            self.submit_proxy_write(connection_id)
+        }
+    }
+
+    fn handle_proxy_read(&mut self, operation: OperationId, result: i32) -> io::Result<()> {
+        let connection_id = ConnectionId {
+            slot: operation.slot,
+            generation: operation.generation,
+        };
+        let shutting_down = self.shutting_down;
+        let max_write_buffer_size = self.limits.max_write_buffer_size;
+        let Some(proxy) = self.current_proxy_mut(connection_id) else {
+            return Ok(());
+        };
+        proxy.operation_pending = false;
+        if shutting_down {
+            self.connections.remove(operation.slot as usize);
+            return Ok(());
+        }
+        if proxy.timed_out {
+            return self.fail_proxy(connection_id, 504, "upstream response timed out");
+        }
+        if result < 0 {
+            let error = io::Error::from_raw_os_error(-result);
+            if matches!(error.raw_os_error(), Some(libc::EAGAIN | libc::EINTR)) {
+                return self.submit_proxy_read(connection_id);
+            }
+            return self.fail_proxy(connection_id, 502, "upstream response failed");
+        }
+        if result == 0 {
+            self.connections.remove(operation.slot as usize);
+            return Ok(());
+        }
+        let read = result as usize;
+        if read > proxy.read_buffer.len() || read > max_write_buffer_size {
+            return self.fail_proxy(connection_id, 502, "upstream response chunk is too large");
+        }
+        proxy.response_started = true;
+        proxy.record_progress();
+        let bytes = proxy.read_buffer[..read].to_vec();
+        self.connections[operation.slot as usize].queue_response(bytes);
+        self.submit_send(connection_id)
+    }
+
+    fn current_proxy_mut(&mut self, connection_id: ConnectionId) -> Option<&mut UringProxy> {
+        let connection = self.connections.get_mut(connection_id.slot as usize)?;
+        connection
+            .matches_generation(connection_id.generation)
+            .then_some(())?;
+        connection.proxy.as_mut()
+    }
+
+    fn queue_proxy_error(
+        &mut self,
+        connection_id: ConnectionId,
+        status: u16,
+        message: &str,
+    ) -> io::Result<()> {
+        let slot = connection_id.slot as usize;
+        let Some(connection) = self.connections.get_mut(slot) else {
+            return Ok(());
+        };
+        if !connection.matches_generation(connection_id.generation) {
+            return Ok(());
+        }
+        connection.proxy = None;
+        connection.queue_response(response_bytes(status, message));
+        self.submit_send(connection_id)
+    }
+
+    fn fail_proxy(
+        &mut self,
+        connection_id: ConnectionId,
+        status: u16,
+        message: &str,
+    ) -> io::Result<()> {
+        let slot = connection_id.slot as usize;
+        let response_started = self
+            .connections
+            .get(slot)
+            .and_then(|connection| connection.proxy.as_ref())
+            .is_some_and(|proxy| proxy.response_started);
+        if response_started {
+            self.connections.remove(slot);
+            Ok(())
+        } else {
+            self.queue_proxy_error(connection_id, status, message)
+        }
     }
 
     fn submit_shutdown_read(&mut self) -> io::Result<()> {
@@ -486,6 +865,91 @@ impl IoUringWorker {
         Ok(())
     }
 
+    fn submit_timer_read(&mut self) -> io::Result<()> {
+        let entry = opcode::Read::new(
+            types::Fd(self.timerfd.as_raw_fd()),
+            (&mut *self.timer_value as *mut u64).cast(),
+            std::mem::size_of::<u64>() as u32,
+        )
+        .build()
+        .user_data(super::operation::TIMER_USER_DATA);
+        unsafe { self.ring.submission().push(&entry) }.map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "io_uring submission queue is full",
+            )
+        })?;
+        Ok(())
+    }
+
+    fn check_proxy_timeouts(&mut self) -> io::Result<()> {
+        let now = std::time::Instant::now();
+        let expired: Vec<(ConnectionId, ProxyPhase, bool)> = self
+            .connections
+            .iter()
+            .filter_map(|(slot, connection)| {
+                if connection.write_pending {
+                    return None;
+                }
+                let proxy = connection.proxy.as_ref()?;
+                if proxy.timed_out {
+                    return None;
+                }
+                let timeout = match proxy.phase {
+                    ProxyPhase::Resolving => self.dns_limits.timeout,
+                    ProxyPhase::Connecting => self.proxy_limits.connect_timeout,
+                    ProxyPhase::WritingRequest => self.proxy_limits.write_timeout,
+                    ProxyPhase::ReadingResponse => self.proxy_limits.read_timeout,
+                };
+                (now.duration_since(proxy.progress_at) >= timeout).then_some((
+                    ConnectionId {
+                        slot: slot as u32,
+                        generation: connection.generation,
+                    },
+                    proxy.phase,
+                    proxy.operation_pending,
+                ))
+            })
+            .collect();
+
+        for (connection_id, phase, operation_pending) in expired {
+            if !operation_pending {
+                self.fail_proxy(connection_id, 504, phase.timeout_message())?;
+                continue;
+            }
+            let proxy = self.connections[connection_id.slot as usize]
+                .proxy
+                .as_mut()
+                .unwrap();
+            proxy.timed_out = true;
+            let target = match phase {
+                ProxyPhase::Resolving => continue,
+                ProxyPhase::Connecting => {
+                    OperationId::proxy_connect(connection_id.slot, connection_id.generation)
+                }
+                ProxyPhase::WritingRequest => {
+                    OperationId::proxy_write(connection_id.slot, connection_id.generation)
+                }
+                ProxyPhase::ReadingResponse => {
+                    OperationId::proxy_read(connection_id.slot, connection_id.generation)
+                }
+            };
+            let entry = opcode::AsyncCancel::new(target.encode())
+                .build()
+                .user_data(super::operation::PROXY_CANCEL_USER_DATA);
+            unsafe { self.ring.submission().push(&entry) }.map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "io_uring submission queue is full",
+                )
+            })?;
+        }
+        if !self.shutting_down {
+            self.submit_timer_read()?;
+        }
+        Ok(())
+    }
+
     fn begin_shutdown(&mut self) -> io::Result<()> {
         if self.cancellation_started {
             return Ok(());
@@ -494,6 +958,8 @@ impl IoUringWorker {
         self.cancellation_started = true;
 
         let mut targets = Vec::new();
+        targets.push(super::operation::DNS_USER_DATA);
+        targets.push(super::operation::TIMER_USER_DATA);
         for (index, listener) in self.listeners.iter().enumerate() {
             if listener.accept_pending() {
                 targets.push(listener.accept_operation(index)?.encode());
@@ -508,6 +974,27 @@ impl IoUringWorker {
                 targets.push(OperationId::read(operation_slot, connection.generation).encode());
             } else if connection.write_pending {
                 targets.push(OperationId::write(operation_slot, connection.generation).encode());
+            } else if let Some(proxy) = connection.proxy.as_ref() {
+                if proxy.operation_pending {
+                    let operation = match proxy.phase {
+                        ProxyPhase::Resolving => {
+                            idle_connections.push(slot);
+                            continue;
+                        }
+                        ProxyPhase::Connecting => {
+                            OperationId::proxy_connect(operation_slot, connection.generation)
+                        }
+                        ProxyPhase::WritingRequest => {
+                            OperationId::proxy_write(operation_slot, connection.generation)
+                        }
+                        ProxyPhase::ReadingResponse => {
+                            OperationId::proxy_read(operation_slot, connection.generation)
+                        }
+                    };
+                    targets.push(operation.encode());
+                } else {
+                    idle_connections.push(slot);
+                }
             } else {
                 idle_connections.push(slot);
             }
@@ -556,6 +1043,8 @@ impl IoUringWorker {
         );
         self.submit_initial_accepts()?;
         self.submit_shutdown_read()?;
+        self.submit_dns_read()?;
+        self.submit_timer_read()?;
         self.ring.submit()?;
 
         loop {
@@ -581,6 +1070,17 @@ impl IoUringWorker {
                     self.pending_cancellations = self.pending_cancellations.saturating_sub(1);
                     continue;
                 }
+                if user_data == super::operation::PROXY_CANCEL_USER_DATA {
+                    continue;
+                }
+                if user_data == super::operation::DNS_USER_DATA {
+                    self.process_dns_results()?;
+                    continue;
+                }
+                if user_data == super::operation::TIMER_USER_DATA {
+                    self.check_proxy_timeouts()?;
+                    continue;
+                }
                 let Some(operation) = OperationId::decode(user_data) else {
                     eprintln!("ignoring invalid io_uring completion identifier {user_data}");
                     continue;
@@ -594,6 +1094,46 @@ impl IoUringWorker {
 
 fn create_eventfd() -> io::Result<OwnedFd> {
     let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+    if fd < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    }
+}
+
+fn create_timerfd() -> io::Result<OwnedFd> {
+    let fd = unsafe { libc::timerfd_create(libc::CLOCK_MONOTONIC, libc::TFD_CLOEXEC) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+    let interval = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 50_000_000,
+    };
+    let timer = libc::itimerspec {
+        it_interval: interval,
+        it_value: interval,
+    };
+    if unsafe { libc::timerfd_settime(owned.as_raw_fd(), 0, &timer, std::ptr::null_mut()) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(owned)
+}
+
+fn create_upstream_socket(address: std::net::SocketAddr) -> io::Result<OwnedFd> {
+    let domain = if address.is_ipv4() {
+        libc::AF_INET
+    } else {
+        libc::AF_INET6
+    };
+    let fd = unsafe {
+        libc::socket(
+            domain,
+            libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            0,
+        )
+    };
     if fd < 0 {
         Err(io::Error::last_os_error())
     } else {
