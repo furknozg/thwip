@@ -15,16 +15,29 @@ pub(super) struct UringListener {
     #[allow(dead_code)] // Used when accepted connections begin HTTP routing.
     pub(super) server_indices: Vec<usize>,
     generation: u16,
+    accept_mode: AcceptMode,
     accept_pending: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AcceptMode {
+    SingleShot,
+    Multishot,
+}
+
 impl UringListener {
-    pub(super) fn new(socket: OwnedFd, default_server: usize, server_indices: Vec<usize>) -> Self {
+    pub(super) fn new(
+        socket: OwnedFd,
+        default_server: usize,
+        server_indices: Vec<usize>,
+        accept_mode: AcceptMode,
+    ) -> Self {
         Self {
             socket,
             default_server,
             server_indices,
             generation: 1,
+            accept_mode,
             accept_pending: false,
         }
     }
@@ -40,14 +53,19 @@ impl UringListener {
         })?;
         let operation = OperationId::accept(slot, self.generation);
 
-        Ok(opcode::Accept::new(
-            types::Fd(self.socket.as_raw_fd()),
-            ptr::null_mut(),
-            ptr::null_mut(),
-        )
-        .flags(libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK)
-        .build()
-        .user_data(operation.encode()))
+        let entry = match self.accept_mode {
+            AcceptMode::SingleShot => opcode::Accept::new(
+                types::Fd(self.socket.as_raw_fd()),
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+            .flags(libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK)
+            .build(),
+            AcceptMode::Multishot => opcode::AcceptMulti::new(types::Fd(self.socket.as_raw_fd()))
+                .flags(libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK)
+                .build(),
+        };
+        Ok(entry.user_data(operation.encode()))
     }
 
     pub(super) const fn accept_pending(&self) -> bool {
@@ -58,7 +76,16 @@ impl UringListener {
         self.accept_pending = true;
     }
 
-    pub(super) fn mark_accept_completed(&mut self) {
+    pub(super) const fn accept_mode(&self) -> AcceptMode {
+        self.accept_mode
+    }
+
+    pub(super) fn record_completion(&mut self, has_more: bool) {
+        self.accept_pending = self.accept_mode == AcceptMode::Multishot && has_more;
+    }
+
+    pub(super) fn fall_back_to_single_shot(&mut self) {
+        self.accept_mode = AcceptMode::SingleShot;
         self.accept_pending = false;
     }
 

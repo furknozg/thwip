@@ -1,10 +1,11 @@
 use super::{
     buffer_ring::{ProvidedBufferRing, BUFFER_GROUP},
+    capabilities::Capabilities,
     connection::{
         next_generation, CompletedRequest, ConnectionId, PendingRequest, ProxyPhase,
         UringConnection, UringProxy,
     },
-    listener::UringListener,
+    listener::{AcceptMode, UringListener},
     operation::{OperationId, OperationKind},
     resolver::{DnsResolver, ResolveResult},
     IoUringRuntime,
@@ -55,6 +56,7 @@ pub struct IoUringWorker {
 struct Completion {
     operation: OperationId,
     result: i32,
+    flags: u32,
     buffer_id: Option<u16>,
 }
 
@@ -65,6 +67,8 @@ impl IoUringWorker {
         let ring: IoUring<squeue::Entry, cqueue::Entry> = IoUring::builder()
             .setup_cqsize(runtime.cq_entries)
             .build(runtime.sq_entries)?;
+        let capabilities = Capabilities::probe(&ring)?;
+        capabilities.validate_required()?;
         let buffer_ring =
             ProvidedBufferRing::register(&ring, runtime.buf_ring_size, runtime.buf_size)?;
 
@@ -76,6 +80,7 @@ impl IoUringWorker {
                     group.socket.into(),
                     group.default_server,
                     group.server_indices,
+                    AcceptMode::Multishot,
                 )
             })
             .collect();
@@ -142,9 +147,11 @@ impl IoUringWorker {
 
     fn dispatch_completion(&mut self, completion: Completion) -> io::Result<()> {
         match completion.operation.kind {
-            OperationKind::Accept => {
-                self.handle_accept_completion(completion.operation, completion.result)
-            }
+            OperationKind::Accept => self.handle_accept_completion(
+                completion.operation,
+                completion.result,
+                completion.flags,
+            ),
             OperationKind::Read => self.handle_read_completion(
                 completion.operation,
                 completion.result,
@@ -167,7 +174,12 @@ impl IoUringWorker {
         }
     }
 
-    fn handle_accept_completion(&mut self, operation: OperationId, result: i32) -> io::Result<()> {
+    fn handle_accept_completion(
+        &mut self,
+        operation: OperationId,
+        result: i32,
+        flags: u32,
+    ) -> io::Result<()> {
         // A successful CQE transfers ownership of a new descriptor even if its
         // operation ID is stale, so wrap it before any early return.
         let accepted = (result >= 0).then(|| unsafe { OwnedFd::from_raw_fd(result) });
@@ -178,7 +190,15 @@ impl IoUringWorker {
         if !listener.matches_generation(operation.generation) {
             return Ok(());
         }
-        listener.mark_accept_completed();
+        let accept_mode = listener.accept_mode();
+        listener.record_completion(cqueue::more(flags));
+
+        if accept_mode == AcceptMode::Multishot && multishot_is_unsupported(result) {
+            listener.fall_back_to_single_shot();
+            eprintln!(
+                "listener {listener_idx}: multishot accept is unavailable; falling back to single-shot"
+            );
+        }
 
         if let Some(accepted) = accepted {
             if !self.shutting_down {
@@ -187,12 +207,14 @@ impl IoUringWorker {
                     Err(error) => eprintln!("failed to retain accepted connection: {error}"),
                 }
             }
-        } else {
+        } else if !(self.shutting_down && -result == libc::ECANCELED)
+            && !multishot_is_unsupported(result)
+        {
             let error = io::Error::from_raw_os_error(-result);
             eprintln!("listener {listener_idx} accept failed: {error}");
         }
 
-        if !self.shutdown.is_requested() {
+        if !self.shutdown.is_requested() && !self.listeners[listener_idx].accept_pending() {
             self.submit_accept(listener_idx)?;
         }
         Ok(())
@@ -1039,19 +1061,21 @@ impl IoUringWorker {
                 return Ok(());
             }
             self.ring.submit_and_wait(1)?;
-            let completions: Vec<(u64, i32, Option<u16>)> = self
+            let completions: Vec<(u64, i32, u32, Option<u16>)> = self
                 .ring
                 .completion()
                 .map(|cqe| {
+                    let flags = cqe.flags();
                     (
                         cqe.user_data(),
                         cqe.result(),
-                        cqueue::buffer_select(cqe.flags()),
+                        flags,
+                        cqueue::buffer_select(flags),
                     )
                 })
                 .collect();
 
-            for (user_data, result, buffer_id) in completions {
+            for (user_data, result, flags, buffer_id) in completions {
                 if user_data == super::operation::CONTROL_USER_DATA {
                     self.shutdown.request();
                     continue;
@@ -1082,6 +1106,7 @@ impl IoUringWorker {
                 self.dispatch_completion(Completion {
                     operation,
                     result,
+                    flags,
                     buffer_id,
                 })?;
             }
@@ -1103,6 +1128,10 @@ fn push_entry(
         }
         ring.submit()?;
     }
+}
+
+pub(super) fn multishot_is_unsupported(result: i32) -> bool {
+    result < 0 && matches!(-result, libc::EINVAL | libc::EOPNOTSUPP)
 }
 
 fn create_eventfd() -> io::Result<OwnedFd> {

@@ -135,8 +135,11 @@ HTTP responses, including static files and streaming upstream proxies.
 
 ### `io_uring` mode
 
-- [ ] Probe kernel and opcode support at startup; make `auto` fall back to
-  `epoll` and make explicit `io_uring` fail clearly when unsupported.
+- [x] Probe and validate the baseline operations required by the direct
+  `io_uring` worker before listeners are started; explicit `io_uring` startup
+  fails when a required operation is unavailable.
+- [ ] Use those capability results in `auto` mode so unsupported Linux hosts
+  fall back to `epoll` with a clear reason.
 - [x] Use a direct `io-uring` driver whose worker owns the ring, listeners,
   accepted sockets, operation state, and buffers.
 - [x] Create the ring from configured SQ/CQ entry counts and surface setup
@@ -161,7 +164,7 @@ HTTP responses, including static files and streaming upstream proxies.
   results, and fall back to the next address after a failed connection attempt.
 - [x] Flush and retry submissions when the SQ is temporarily saturated instead
   of terminating the worker with `WouldBlock`.
-- [ ] Add multishot accept behind capability checks while retaining the
+- [x] Add multishot accept behind capability checks while retaining the
   single-shot resubmission fallback.
 - [x] Receive client and upstream data through a registered provided-buffer
   ring sized by `buf_ring_size`, with buffers sized by `buf_size` and returned
@@ -232,10 +235,14 @@ HTTP responses, including static files and streaming upstream proxies.
 ## Suggested delivery order
 
 1. Add upstream response-framing validation.
-2. Expose validated request bodies to other actions, then add keep-alive and chunked
-   request decoding.
-3. Add multi-worker `SO_REUSEPORT` and shutdown tests on Linux and macOS/BSD,
-   plus overload and file-descriptor-exhaustion coverage.
-4. Stream large static files and add range/cache support.
-5. Implement `io_uring`, capability probing, automatic fallback, parity tests,
-   and comparative benchmarks.
+2. Add `auto` runtime selection, capability-based `epoll` fallback, and startup
+   logs explaining the selected backend.
+3. Add native Linux `io_uring` tests for multishot accept/fallback, provided
+   buffers, stale completions, proxying, and graceful shutdown.
+4. Expose validated request bodies to other actions, then add keep-alive and
+   chunked request decoding.
+5. Add multi-worker `SO_REUSEPORT` and shutdown tests on Linux and macOS/BSD,
+   plus overload, queue-saturation, buffer-starvation, cancellation-race, and
+   file-descriptor-exhaustion coverage.
+6. Stream large static files, add range/cache support, and benchmark all runtime
+   backends before adopting optional `io_uring` operations.

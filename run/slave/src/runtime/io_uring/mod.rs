@@ -35,6 +35,9 @@ mod connection;
 mod buffer_ring;
 
 #[cfg(target_os = "linux")]
+mod capabilities;
+
+#[cfg(target_os = "linux")]
 mod worker;
 
 #[cfg(target_os = "linux")]
